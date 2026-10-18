@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Downloaded and derived data. All of it is reproducible:
+#   python -m epl.cli fetch               (match data + xG, ~1 min)
+#   python -m epl.cli fetch --with-squads (adds line-ups, ~25 min)
+data/
+
+# Trained model artefacts
+models/
+
+# Generated output. The two charts the README embeds are kept so the page
+# renders on GitHub; everything else here is rebuilt by `backtest` / `bet`.
+reports/*
+!reports/rps_by_season.png
+!reports/calibration_xgb.png
+
+# OS
+.DS_Store
