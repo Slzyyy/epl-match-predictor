@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -32,6 +33,7 @@ from .predict import predict_fixtures
 from .lineups import attach_availability, download_season_rosters, load_availability
 from .xg import attach_xg, load_xg
 from .report import write_all
+from .site import SITE_DIR, build as build_site
 
 FEATURES_PATH = DATA_PROCESSED / "features.pkl"
 PREDS_PATH = DATA_PROCESSED / "backtest_preds.pkl"
@@ -136,6 +138,24 @@ def cmd_backtest(args) -> int:
     preds.to_csv(REPORTS / "backtest_predictions.csv", index=False)
     print(f"\nwrote {csv} and {REPORTS / 'backtest_predictions.csv'}")
     print(f"predictions cached -> {PREDS_PATH}")
+    return 0
+
+
+def cmd_site(args) -> int:
+    out = Path(args.out) if args.out else SITE_DIR
+    preds = pd.read_pickle(PREDS_PATH) if PREDS_PATH.exists() else None
+    if preds is None:
+        print("note: no cached backtest, so the performance section will be "
+              "omitted; run `backtest` first", file=sys.stderr)
+    fixtures = predict_fixtures(
+        kind=args.main_model,
+        refresh=not args.no_refresh,
+        include_odds=args.use_odds,
+        limit_days=args.days,
+        feature_set=args.feature_set,
+    )
+    dest = build_site(fixtures, preds, out_dir=out, repo_url=args.repo_url)
+    print(f"{len(fixtures)} fixtures; wrote {dest}")
     return 0
 
 
@@ -276,6 +296,13 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-avail", action="store_true",
                    help="ablate the squad-availability features")
     b.set_defaults(func=cmd_backtest)
+
+    st = sub.add_parser("site", parents=[common], help="build the static website")
+    st.add_argument("--out", default=None, help="output directory (default: site/)")
+    st.add_argument("--days", type=int, default=10, help="fixture horizon")
+    st.add_argument("--no-refresh", action="store_true")
+    st.add_argument("--repo-url", default="https://github.com/Slzyyy/epl-match-predictor")
+    st.set_defaults(func=cmd_site)
 
     bt = sub.add_parser("bet", parents=[common], help="value-betting backtest")
     bt.add_argument("--models", nargs="+", default=None)

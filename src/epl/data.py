@@ -133,8 +133,17 @@ def download_season(start_year: int, *, refresh: bool = False) -> Path:
 
     url = BASE_URL.format(code=season_code(start_year))
     log.info("downloading %s", url)
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        # The source goes down from time to time. A scheduled rebuild should
+        # fall back to the last good copy rather than fail outright; only a
+        # season we have never fetched is a genuine error.
+        if path.exists():
+            log.warning("%s unavailable (%s); using the cached copy", url, exc)
+            return path
+        raise
     path.write_bytes(resp.content)
     return path
 
@@ -277,9 +286,15 @@ def load_fixtures(*, refresh: bool = True) -> pd.DataFrame:
     """Fetch upcoming fixtures (all leagues) and keep the Premier League ones."""
     path = DATA_RAW / "fixtures.csv"
     if refresh or not path.exists():
-        resp = requests.get(FIXTURES_URL, timeout=60)
-        resp.raise_for_status()
-        path.write_bytes(resp.content)
+        try:
+            resp = requests.get(FIXTURES_URL, timeout=60)
+            resp.raise_for_status()
+            path.write_bytes(resp.content)
+        except requests.RequestException as exc:
+            if not path.exists():
+                log.warning("fixtures unavailable (%s) and nothing cached", exc)
+                return pd.DataFrame(columns=["date", "home_team", "away_team"])
+            log.warning("fixtures unavailable (%s); using the cached copy", exc)
     raw = _read_csv_robust(path)
     raw = raw[raw.get("Div", pd.Series(dtype=object)) == "E0"]
     if raw.empty:

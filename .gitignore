@@ -24,3 +24,6 @@ reports/*
 
 # OS
 .DS_Store
+
+# Generated site
+site/

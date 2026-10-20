@@ -52,13 +52,19 @@ def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) 
         return json.loads(path.read_text(encoding="utf-8"))
 
     log.info("downloading Understat EPL %s", year)
-    resp = requests.get(
-        LEAGUE_URL.format(year=year),
-        headers={**_HEADERS, "Referer": PAGE_URL.format(year=year)},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
+    try:
+        resp = requests.get(
+            LEAGUE_URL.format(year=year),
+            headers={**_HEADERS, "Referer": PAGE_URL.format(year=year)},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        if path.exists():
+            log.warning("Understat %s unavailable (%s); using the cached copy", year, exc)
+            return json.loads(path.read_text(encoding="utf-8"))
+        raise
     path.write_text(json.dumps(payload), encoding="utf-8")
     del is_current
     time.sleep(pause)  # be gentle with a free data source

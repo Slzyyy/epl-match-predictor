@@ -53,6 +53,15 @@ def predict_fixtures(
     if fx.empty:
         return pd.DataFrame(columns=["date", "home_team", "away_team", *RESULTS])
 
+    # Drop anything already played. The fixtures feed keeps recent rounds for a
+    # while, and a cached copy can be several days stale if the source is down,
+    # so without this the page can show matches that have already finished.
+    today = pd.Timestamp.now().normalize()
+    fx = fx[fx["date"] >= today]
+    if fx.empty:
+        log.warning("no fixtures dated today or later; the feed may be stale")
+        return pd.DataFrame(columns=["date", "home_team", "away_team", *RESULTS])
+
     if limit_days is not None:
         horizon = fx["date"].min() + pd.Timedelta(days=limit_days)
         fx = fx[fx["date"] <= horizon]

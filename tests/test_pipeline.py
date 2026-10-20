@@ -827,3 +827,83 @@ def test_unknown_scenario_and_stake_rule_are_rejected(toy_bets):
         find_bets(preds, matches, scenario="nonsense")
     with pytest.raises(ValueError):
         find_bets(preds, matches, scenario="close", stake_rule="martingale")
+
+
+# --------------------------------------------------------------------------
+# site
+# --------------------------------------------------------------------------
+def test_already_played_fixtures_are_dropped(monkeypatch):
+    """A stale fixtures feed must not put finished matches on the site."""
+    import epl.predict as P
+
+    today = pd.Timestamp.now().normalize()
+    feed = pd.DataFrame(
+        {
+            "date": [today - pd.Timedelta(days=3), today, today + pd.Timedelta(days=2)],
+            "home_team": pd.array(["A", "B", "C"], dtype="string"),
+            "away_team": pd.array(["D", "E", "F"], dtype="string"),
+            "odds_h": 2.0, "odds_d": 3.5, "odds_a": 4.0,
+        }
+    )
+    captured = {}
+
+    def fake_build(matches, fx, *a, **k):
+        captured["dates"] = list(fx["date"])
+        raise RuntimeError("stop here")
+
+    history = pd.DataFrame(
+        {"home_team": pd.array(["A", "C"], dtype="string"),
+         "away_team": pd.array(["D", "F"], dtype="string")}
+    )
+    monkeypatch.setattr(P, "load_matches", lambda **k: history)
+    monkeypatch.setattr(P, "attach_xg", lambda m, x: m)
+    monkeypatch.setattr(P, "load_xg", lambda **k: pd.DataFrame())
+    monkeypatch.setattr(P, "_append_fixtures", fake_build)
+    with pytest.raises(RuntimeError):
+        P.predict_fixtures(fixtures=feed, refresh=False, limit_days=30)
+    assert all(d >= today for d in captured["dates"]), "a past fixture survived"
+    assert len(captured["dates"]) == 2
+
+
+def test_site_renders_without_fixtures_or_backtest(tmp_path):
+    """The page must still build when the feed is empty."""
+    from epl.site import build
+
+    dest = build(pd.DataFrame(), None, out_dir=tmp_path)
+    page = dest.read_text()
+    assert "No Premier League fixtures" in page
+    assert "does not beat the bookmakers" in page
+    assert "<html" in page and "</html>" in page
+
+
+def test_site_renders_fixture_probabilities(tmp_path):
+    from epl.site import build
+
+    fx = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-11-01")],
+            "home_team": ["Arsenal"], "away_team": ["Chelsea"],
+            "p_home": [0.5], "p_draw": [0.3], "p_away": [0.2],
+        }
+    )
+    page = build(fx, None, out_dir=tmp_path).read_text()
+    assert "Arsenal v Chelsea" in page
+    assert "50%" in page and "30%" in page
+    # Widths must be the probabilities, so the bar is not misleading.
+    assert "width:50.00%" in page
+
+
+def test_site_escapes_team_names(tmp_path):
+    """Team names come from a third-party feed, so they are escaped."""
+    from epl.site import build
+
+    fx = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-11-01")],
+            "home_team": ["<script>alert(1)</script>"], "away_team": ["Chelsea"],
+            "p_home": [0.5], "p_draw": [0.3], "p_away": [0.2],
+        }
+    )
+    page = build(fx, None, out_dir=tmp_path).read_text()
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page

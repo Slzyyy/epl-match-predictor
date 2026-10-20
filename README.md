@@ -327,6 +327,34 @@ actual          H     D     A
 
 ---
 
+## Website
+
+A static page of the current week's predictions, the model's running record and
+the backtest charts is published to GitHub Pages:
+
+**https://slzyyy.github.io/epl-match-predictor**
+
+Build it locally:
+
+```bash
+python -m epl.cli site      # writes site/index.html
+open site/index.html
+```
+
+`.github/workflows/site.yml` rebuilds and republishes it every Tuesday at
+06:00 UTC (and on every push to `main`), running the tests, refetching data,
+re-running the backtest and regenerating the page. Nothing is served
+dynamically: predictions only change when fixtures and results change, so
+there is nothing for a server to compute per visitor.
+
+The page leads with the fact that the model loses to the bookmakers and that
+betting it returns -3.87%. That is deliberate — a page of confident-looking
+percentages with no context is an invitation to bet on them.
+
+If the data source is unreachable the build falls back to the last cached copy
+rather than failing, and fixtures that have already kicked off are filtered
+out, so a stale feed cannot put finished matches on the page.
+
 ## Install
 
 Requires Python 3.11+. On macOS, XGBoost also needs the OpenMP runtime
@@ -359,6 +387,9 @@ python -m epl.cli importance --top 20
 
 # value-betting backtest: ROI, confidence intervals, no-skill control
 python -m epl.cli bet --scenarios close open best_close
+
+# build the static site into site/
+python -m epl.cli site
 ```
 
 Sample output from `predict`:
@@ -481,7 +512,7 @@ two upcoming fixtures for the same team both see the state after their last
 *played* match rather than each other's blanks.
 
 ```bash
-python -m pytest     # 46 tests
+python -m pytest     # 50 tests
 ```
 
 ## What moved the needle, and what did not
@@ -558,7 +589,8 @@ src/epl/
   predict.py    fit on everything, score upcoming fixtures
   betting.py    value-betting backtest, staking rules and ROI statistics
   report.py     charts
+  site.py       static site generator
   cli.py        command line entry point
-tests/          46 tests, leakage-focused
+tests/          50 tests, leakage-focused
 reports/        charts and CSVs written by the CLI
 ```
