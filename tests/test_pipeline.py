@@ -907,3 +907,94 @@ def test_site_escapes_team_names(tmp_path):
     page = build(fx, None, out_dir=tmp_path).read_text()
     assert "<script>alert(1)</script>" not in page
     assert "&lt;script&gt;" in page
+
+
+# --------------------------------------------------------------------------
+# fixture sourcing
+# --------------------------------------------------------------------------
+def _understat_payload():
+    """Minimal Understat league payload: one played match, two to come."""
+    return {
+        "dates": [
+            {"isResult": True, "datetime": "2026-08-15 15:00",
+             "h": {"title": "Arsenal"}, "a": {"title": "Chelsea"},
+             "goals": {"h": "1", "a": "0"}, "xG": {"h": "1.5", "a": "0.8"}},
+            {"isResult": False, "datetime": "2026-08-22 17:30",
+             "h": {"title": "Nottingham Forest"}, "a": {"title": "Wolverhampton Wanderers"},
+             "goals": {"h": None, "a": None}, "xG": {"h": None, "a": None}},
+            {"isResult": False, "datetime": "2026-08-23 14:00",
+             "h": {"title": "Queens Park Rangers"}, "a": {"title": "Manchester United"},
+             "goals": {"h": None, "a": None}, "xG": {"h": None, "a": None}},
+        ],
+        "teams": {},
+    }
+
+
+def test_unplayed_fixtures_are_extracted_with_mapped_names(monkeypatch):
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "download_season_xg", lambda y, **k: _understat_payload())
+    fx = X.load_season_fixtures(2026)
+    assert len(fx) == 2, "only the unplayed matches belong in the fixture list"
+    # Understat's long names must map to the names the model knows.
+    assert fx["home_team"].tolist() == ["Nott'm Forest", "QPR"]
+    assert fx["away_team"].tolist() == ["Wolves", "Man United"]
+    assert fx["time"].tolist() == ["17:30", "14:00"]
+    assert fx["date"].tolist() == [pd.Timestamp("2026-08-22"), pd.Timestamp("2026-08-23")]
+
+
+def test_played_matches_never_appear_as_fixtures(monkeypatch):
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "download_season_xg", lambda y, **k: _understat_payload())
+    fx = X.load_season_fixtures(2026)
+    assert not ((fx["home_team"] == "Arsenal") & (fx["away_team"] == "Chelsea")).any()
+
+
+def test_fixtures_survive_football_data_being_down(monkeypatch):
+    """The calendar must still arrive when the odds feed throws."""
+    import epl.predict as P
+
+    base = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-08-22")], "time": ["17:30"],
+            "home_team": pd.array(["Arsenal"], dtype="string"),
+            "away_team": pd.array(["Chelsea"], dtype="string"),
+        }
+    )
+    monkeypatch.setattr(P, "load_upcoming_fixtures", lambda **k: base)
+    monkeypatch.setattr(
+        P, "load_fixtures", lambda **k: (_ for _ in ()).throw(RuntimeError("site down"))
+    )
+    out = P.upcoming_fixtures()
+    assert len(out) == 1
+    assert out["home_team"].iloc[0] == "Arsenal"
+    assert "odds_h" not in out.columns  # no prices, but the fixture is there
+
+
+def test_odds_are_merged_onto_the_calendar_when_available(monkeypatch):
+    import epl.predict as P
+
+    base = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-08-22"), pd.Timestamp("2027-01-10")],
+            "time": ["17:30", "14:00"],
+            "home_team": pd.array(["Arsenal", "Leeds"], dtype="string"),
+            "away_team": pd.array(["Chelsea", "Hull"], dtype="string"),
+        }
+    )
+    # football-data lists only the imminent round.
+    extra = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-08-22")],
+            "home_team": pd.array(["Arsenal"], dtype="string"),
+            "away_team": pd.array(["Chelsea"], dtype="string"),
+            "odds_h": [2.0], "odds_d": [3.5], "odds_a": [4.0],
+        }
+    )
+    monkeypatch.setattr(P, "load_upcoming_fixtures", lambda **k: base)
+    monkeypatch.setattr(P, "load_fixtures", lambda **k: extra)
+    out = P.upcoming_fixtures()
+    assert len(out) == 2, "the far fixture must survive the merge"
+    assert out.loc[out["home_team"] == "Arsenal", "odds_h"].iloc[0] == 2.0
+    assert pd.isna(out.loc[out["home_team"] == "Leeds", "odds_h"].iloc[0])

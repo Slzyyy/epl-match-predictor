@@ -18,9 +18,40 @@ from .data import load_fixtures, load_matches
 from .features import build_features, core_feature_columns, feature_columns
 from .model import fit_model
 from .lineups import attach_availability, load_availability
-from .xg import attach_xg, load_xg
+from .xg import attach_xg, load_upcoming_fixtures, load_xg
 
 log = logging.getLogger(__name__)
+
+
+def upcoming_fixtures(*, refresh: bool = True) -> pd.DataFrame:
+    """The remaining fixture list, with bookmaker prices where they exist.
+
+    Understat is the source of the calendar because it carries the whole
+    season, so the list is never empty mid-season. football-data's feed is
+    merged in on top purely for the odds it attaches to the next few days;
+    when that site is unreachable the fixtures still come through, just
+    without prices.
+    """
+    base = load_upcoming_fixtures(refresh=refresh)
+    try:
+        extra = load_fixtures(refresh=refresh)
+    except Exception as exc:
+        log.warning("football-data fixtures unavailable (%s)", exc)
+        extra = pd.DataFrame()
+
+    if base.empty:
+        return extra
+    if extra.empty or not {"odds_h", "odds_d", "odds_a"} <= set(extra.columns):
+        return base
+
+    odds = (
+        extra[["home_team", "away_team", "odds_h", "odds_d", "odds_a"]]
+        .dropna(subset=["home_team", "away_team"])
+        .drop_duplicates(["home_team", "away_team"], keep="last")
+    )
+    # Matched on the team pair alone: a fixture appears once in the remaining
+    # calendar, and the two feeds can disagree about a rescheduled date.
+    return base.merge(odds, on=["home_team", "away_team"], how="left", validate="many_to_one")
 
 
 def _append_fixtures(matches: pd.DataFrame, fixtures: pd.DataFrame) -> pd.DataFrame:
@@ -49,7 +80,7 @@ def predict_fixtures(
     """Return one row per upcoming fixture with H/D/A probabilities."""
     matches = load_matches(refresh=refresh)
     matches = attach_xg(matches, load_xg(refresh=refresh))
-    fx = load_fixtures(refresh=refresh) if fixtures is None else fixtures.copy()
+    fx = upcoming_fixtures(refresh=refresh) if fixtures is None else fixtures.copy()
     if fx.empty:
         return pd.DataFrame(columns=["date", "home_team", "away_team", *RESULTS])
 

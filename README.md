@@ -351,9 +351,11 @@ The page leads with the fact that the model loses to the bookmakers and that
 betting it returns -3.87%. That is deliberate — a page of confident-looking
 percentages with no context is an invitation to bet on them.
 
-If the data source is unreachable the build falls back to the last cached copy
+If a data source is unreachable the build falls back to the last cached copy
 rather than failing, and fixtures that have already kicked off are filtered
-out, so a stale feed cannot put finished matches on the page.
+out, so a stale feed cannot put finished matches on the page. The fixture list
+itself comes from the full season calendar, so the page keeps showing matches
+through international breaks and football-data outages alike.
 
 ## Install
 
@@ -428,7 +430,13 @@ average from 2019-20, giving 5,380 matches with full open/close coverage. The
 pair always comes from one firm, so the drift is never one bookmaker's opening
 price against another's close.
 
-Fixtures for the coming week come from the same site's `fixtures.csv`.
+**Fixtures** come from Understat rather than football-data. The same payload
+that carries the xG also carries the full 380-match calendar, flagged played
+or not, so the remaining fixture list runs to the end of May and is never
+empty between rounds — football-data's `fixtures.csv` only publishes the next
+few days and goes blank in the gaps. That feed is still merged in on top for
+the bookmaker prices it attaches to imminent matches; when it is unreachable
+the fixtures come through anyway, just without odds.
 
 **Expected goals** come from [Understat](https://understat.com/league/EPL),
 which covers the Premier League from 2014-15 — 4,620 matches, joined with 100%
@@ -512,7 +520,7 @@ two upcoming fixtures for the same team both see the state after their last
 *played* match rather than each other's blanks.
 
 ```bash
-python -m pytest     # 50 tests
+python -m pytest     # 54 tests
 ```
 
 ## What moved the needle, and what did not
@@ -591,6 +599,6 @@ src/epl/
   report.py     charts
   site.py       static site generator
   cli.py        command line entry point
-tests/          50 tests, leakage-focused
+tests/          54 tests, leakage-focused
 reports/        charts and CSVs written by the CLI
 ```

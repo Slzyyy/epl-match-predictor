@@ -195,3 +195,50 @@ def attach_xg(matches: pd.DataFrame, xg: pd.DataFrame | None = None) -> pd.DataF
     if missing:
         log.warning("%d matches in the xG era have no Understat row", missing)
     return merged
+
+
+def load_season_fixtures(year: int, *, refresh: bool = False) -> pd.DataFrame:
+    """Fixtures in a season that have not been played yet.
+
+    The same Understat payload that supplies xG also carries the full 380-match
+    calendar, flagged with ``isResult``. The unplayed half is the rest of the
+    season's fixture list, which is why no separate fixtures feed is needed:
+    football-data's publishes only the next few days and goes empty between
+    rounds, whereas this is complete from August to May.
+    """
+    payload = download_season_xg(year, refresh=refresh)
+    upcoming = [m for m in payload.get("dates", []) if not m.get("isResult")]
+    if not upcoming:
+        return pd.DataFrame(columns=["date", "time", "home_team", "away_team"])
+
+    when = pd.to_datetime([m["datetime"] for m in upcoming], errors="coerce")
+    df = pd.DataFrame(
+        {
+            "date": when.normalize(),
+            "time": when.strftime("%H:%M"),
+            "home_team": [m["h"]["title"] for m in upcoming],
+            "away_team": [m["a"]["title"] for m in upcoming],
+            "season_start": year,
+        }
+    )
+    for col in ("home_team", "away_team"):
+        df[col] = df[col].astype("string").str.strip().replace(UNDERSTAT_ALIASES)
+    return df[df["date"].notna()].sort_values("date").reset_index(drop=True)
+
+
+def load_upcoming_fixtures(
+    first_season: int = FIRST_XG_SEASON, last_season: int = 2026, *, refresh: bool = True
+) -> pd.DataFrame:
+    """Unplayed fixtures across the seasons available, newest season last."""
+    frames = []
+    for year in range(max(first_season, FIRST_XG_SEASON), last_season + 1):
+        try:
+            part = load_season_fixtures(year, refresh=refresh)
+        except Exception as exc:
+            log.warning("no Understat fixtures for %s: %s", year, exc)
+            continue
+        if not part.empty:
+            frames.append(part)
+    if not frames:
+        return pd.DataFrame(columns=["date", "time", "home_team", "away_team"])
+    return pd.concat(frames, ignore_index=True).sort_values("date").reset_index(drop=True)
