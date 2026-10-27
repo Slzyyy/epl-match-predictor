@@ -50,6 +50,16 @@ jobs:
       - name: Fetch data
         run: python -m epl.cli fetch
 
+      - name: Fetch current-season line-ups
+        # Only the current season: the club pages show this season's players,
+        # and the full archive would be ~4,600 requests against a free site.
+        run: |
+          python - <<'PY'
+          from epl.config import LAST_SEASON
+          from epl.lineups import download_season_rosters
+          download_season_rosters(LAST_SEASON)
+          PY
+
       - name: Backtest
         run: python -m epl.cli backtest
 

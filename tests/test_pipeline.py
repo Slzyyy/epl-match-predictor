@@ -1313,3 +1313,24 @@ def test_stale_club_pages_are_removed(tmp_path):
     build_club_pages([profile], "2026-27", tmp_path)
     assert not (clubs / "relegated-town.html").exists()
     assert (clubs / "arsenal.html").exists()
+
+
+def test_top_scorers_handles_absent_player_data():
+    """Club pages must still build where no line-up data has been fetched."""
+    from epl.clubs import top_assists, top_scorers
+
+    for frame in (pd.DataFrame(), pd.DataFrame(columns=["team", "player", "goals"])):
+        assert top_scorers(frame, "Arsenal").empty
+        assert top_assists(frame, "Arsenal").empty
+
+
+def test_player_stats_returns_typed_columns_when_no_rosters(monkeypatch):
+    import epl.clubs as C
+
+    monkeypatch.setattr(C, "load_season_rosters", lambda y: pd.DataFrame())
+    out = C.player_stats(2026)
+    assert out.empty
+    # Numeric dtypes, or nlargest raises downstream.
+    for col in ("goals", "assists", "xg", "xa"):
+        assert pd.api.types.is_numeric_dtype(out[col]), col
+    assert C.top_scorers(out, "Arsenal").empty

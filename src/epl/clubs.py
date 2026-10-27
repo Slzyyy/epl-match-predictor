@@ -120,11 +120,23 @@ def league_table(matches: pd.DataFrame, season_start: int) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 def player_stats(season_start: int) -> pd.DataFrame:
     """Per-player totals for a season, labelled with the club they played for."""
+    empty = pd.DataFrame(
+        {
+            "team": pd.Series(dtype="object"), "player": pd.Series(dtype="object"),
+            "apps": pd.Series(dtype="int64"), "minutes": pd.Series(dtype="float64"),
+            "goals": pd.Series(dtype="float64"), "xg": pd.Series(dtype="float64"),
+            "assists": pd.Series(dtype="float64"), "xa": pd.Series(dtype="float64"),
+        }
+    )
     rosters = load_season_rosters(season_start)
     if rosters.empty:
-        return pd.DataFrame(columns=["team", "player", "apps", "minutes", "goals", "assists"])
+        # Typed rather than bare: an object-dtype column reaches nlargest and
+        # raises, which is how this surfaced in CI where no rosters exist.
+        return empty
     idx = season_match_index(season_start)
     df = rosters.merge(idx[["understat_id", "home_team", "away_team"]], on="understat_id")
+    if df.empty:
+        return empty
     df["team"] = df["home_team"].where(df["is_home"], df["away_team"])
 
     agg = {
@@ -143,14 +155,22 @@ def player_stats(season_start: int) -> pd.DataFrame:
     return out
 
 
+def _top_n(players: pd.DataFrame, team: str, value: str, expected: str, n: int) -> pd.DataFrame:
+    cols = ["player", "apps", "minutes", value, expected]
+    if players.empty or value not in players.columns:
+        return pd.DataFrame(columns=cols)
+    sub = players[(players["team"] == team) & (players[value].fillna(0) > 0)]
+    if sub.empty:
+        return pd.DataFrame(columns=cols)
+    return sub.nlargest(n, [value, expected])[cols]
+
+
 def top_scorers(players: pd.DataFrame, team: str, n: int = 10) -> pd.DataFrame:
-    sub = players[(players["team"] == team) & (players["goals"] > 0)]
-    return sub.nlargest(n, ["goals", "xg"])[["player", "apps", "minutes", "goals", "xg"]]
+    return _top_n(players, team, "goals", "xg", n)
 
 
 def top_assists(players: pd.DataFrame, team: str, n: int = 10) -> pd.DataFrame:
-    sub = players[(players["team"] == team) & (players["assists"] > 0)]
-    return sub.nlargest(n, ["assists", "xa"])[["player", "apps", "minutes", "assists", "xa"]]
+    return _top_n(players, team, "assists", "xa", n)
 
 
 def clean_sheet_keepers(season_start: int, matches: pd.DataFrame, team: str) -> pd.DataFrame:
