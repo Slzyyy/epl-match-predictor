@@ -998,3 +998,132 @@ def test_odds_are_merged_onto_the_calendar_when_available(monkeypatch):
     assert len(out) == 2, "the far fixture must survive the merge"
     assert out.loc[out["home_team"] == "Arsenal", "odds_h"].iloc[0] == 2.0
     assert pd.isna(out.loc[out["home_team"] == "Leeds", "odds_h"].iloc[0])
+
+
+# --------------------------------------------------------------------------
+# prediction log
+# --------------------------------------------------------------------------
+def _fx(home, away, p=(0.5, 0.3, 0.2), date="2026-11-07", season=2026):
+    return pd.DataFrame(
+        {
+            "season_start": [season], "date": [pd.Timestamp(date)],
+            "home_team": [home], "away_team": [away],
+            "p_home": [p[0]], "p_draw": [p[1]], "p_away": [p[2]],
+        }
+    )
+
+
+def _played(home, away, hg, ag, season=2026):
+    res = "H" if hg > ag else ("D" if hg == ag else "A")
+    return pd.DataFrame(
+        {
+            "season_start": [season], "home_team": [home], "away_team": [away],
+            "home_goals": [hg], "away_goals": [ag], "result": [res],
+        }
+    )
+
+
+def test_log_round_trips_through_csv(tmp_path):
+    from epl.track import append_predictions, empty_log, load_log, save_log
+
+    logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea"))
+    path = save_log(logged, tmp_path / "log.csv")
+    back = load_log(path)
+    assert len(back) == 1
+    assert back["home_team"].iloc[0] == "Arsenal"
+    assert back["p_h"].iloc[0] == pytest.approx(0.5)
+    assert pd.isna(back["correct"].iloc[0])
+
+
+def test_a_prediction_is_never_overwritten(tmp_path):
+    """Re-running must not let a newer model rewrite what was already said."""
+    from epl.track import append_predictions, empty_log
+
+    first = append_predictions(empty_log(), _fx("Arsenal", "Chelsea", p=(0.5, 0.3, 0.2)))
+    # The same fixture comes round again with different probabilities.
+    second = append_predictions(first, _fx("Arsenal", "Chelsea", p=(0.1, 0.2, 0.7)))
+    assert len(second) == 1
+    assert second["p_h"].iloc[0] == pytest.approx(0.5), "the original was overwritten"
+
+
+def test_live_predictions_take_precedence_over_backfill():
+    from epl.track import append_predictions, empty_log
+
+    live = append_predictions(empty_log(), _fx("Arsenal", "Chelsea", p=(0.5, 0.3, 0.2)))
+    both = append_predictions(live, _fx("Arsenal", "Chelsea", p=(0.9, 0.05, 0.05)),
+                              source="backtest")
+    assert len(both) == 1
+    assert both["source"].iloc[0] == "published"
+    assert both["p_h"].iloc[0] == pytest.approx(0.5)
+
+
+def test_scoring_marks_hits_and_misses():
+    from epl.track import append_predictions, empty_log, score_log
+
+    logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea", p=(0.5, 0.3, 0.2)))
+    logged = append_predictions(logged, _fx("Leeds", "Hull", p=(0.2, 0.3, 0.5)))
+    results = pd.concat([_played("Arsenal", "Chelsea", 2, 0),
+                         _played("Leeds", "Hull", 1, 0)], ignore_index=True)
+    scored = score_log(logged, results)
+
+    arsenal = scored[scored["home_team"] == "Arsenal"].iloc[0]
+    assert arsenal["actual"] == "H" and arsenal["predicted"] == "H"
+    assert arsenal["correct"] == 1
+    leeds = scored[scored["home_team"] == "Leeds"].iloc[0]
+    assert leeds["actual"] == "H" and leeds["predicted"] == "A"
+    assert leeds["correct"] == 0
+
+
+def test_unplayed_matches_stay_unscored():
+    from epl.track import append_predictions, empty_log, score_log
+
+    logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea"))
+    scored = score_log(logged, _played("Leeds", "Hull", 1, 0))
+    assert pd.isna(scored["correct"].iloc[0])
+    assert pd.isna(scored["actual"].iloc[0])
+
+
+def test_summary_counts_and_mean_probability():
+    from epl.track import append_predictions, empty_log, score_log, summarise_log
+
+    logged = empty_log()
+    for h, a, p in [("Arsenal", "Chelsea", (0.6, 0.25, 0.15)),
+                    ("Leeds", "Hull", (0.2, 0.3, 0.5))]:
+        logged = append_predictions(logged, _fx(h, a, p=p))
+    results = pd.concat([_played("Arsenal", "Chelsea", 2, 0),   # H, predicted H
+                         _played("Leeds", "Hull", 1, 0)],       # H, predicted A
+                        ignore_index=True)
+    s = summarise_log(score_log(logged, results))
+    assert s["n"] == 2 and s["correct"] == 1
+    assert s["accuracy"] == pytest.approx(0.5)
+    # Probability given to the actual outcome (H both times): 0.6 and 0.2.
+    assert s["mean_prob_actual"] == pytest.approx(0.4)
+
+
+def test_summary_is_empty_before_anything_is_settled():
+    from epl.track import append_predictions, empty_log, summarise_log
+
+    s = summarise_log(append_predictions(empty_log(), _fx("Arsenal", "Chelsea")))
+    assert s["n"] == 0
+
+
+def test_site_renders_the_track_record(tmp_path):
+    from epl.site import build
+    from epl.track import append_predictions, empty_log, score_log
+
+    logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea", p=(0.6, 0.25, 0.15)))
+    logged = score_log(logged, _played("Arsenal", "Chelsea", 2, 0))
+    page = build(pd.DataFrame(), None, logged=logged, out_dir=tmp_path).read_text()
+    assert "Track record" in page
+    assert "Arsenal v Chelsea" in page
+    assert "hit" in page
+    assert "2&ndash;0" in page  # the score is shown
+
+
+def test_site_track_record_handles_nothing_settled_yet(tmp_path):
+    from epl.site import build
+    from epl.track import append_predictions, empty_log
+
+    logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea"))
+    page = build(pd.DataFrame(), None, logged=logged, out_dir=tmp_path).read_text()
+    assert "No predictions have been settled yet" in page

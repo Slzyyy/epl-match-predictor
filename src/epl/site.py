@@ -87,6 +87,25 @@ tr.best td{font-weight:600}
 figure{margin:0 0 28px}
 figure img{width:100%; height:auto; border:1px solid var(--line); border-radius:var(--radius); display:block}
 figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
+.res{
+  border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px 14px; margin-bottom:8px; background:var(--panel);
+}
+.res-top{display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px}
+.res-top .teams{font-weight:600}
+.score{font-variant-numeric:tabular-nums; font-weight:700; margin-left:8px}
+.verdict{font-size:.8rem; font-weight:700; white-space:nowrap}
+.hit{color:var(--away)} .miss{color:var(--muted)}
+.bar.small{height:20px}
+.seg.dim{opacity:.32}
+.seg.mark{box-shadow:inset 0 0 0 2px rgba(255,255,255,.85)}
+.stats{display:flex; flex-wrap:wrap; gap:10px; margin:0 0 18px}
+.stat{
+  flex:1 1 150px; border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px 14px; background:var(--panel);
+}
+.stat b{display:block; font-size:1.5rem; line-height:1.2; letter-spacing:-.02em}
+.stat span{color:var(--muted); font-size:.78rem}
 footer{margin-top:56px; padding-top:20px; border-top:1px solid var(--line);
        color:var(--muted); font-size:.84rem}
 @media (max-width:560px){
@@ -166,10 +185,89 @@ def _performance(preds: pd.DataFrame) -> tuple[str, str]:
     return table, f"<h3>{html.escape(season)} so far</h3>{cur_table}"
 
 
+_OUTCOME_IDX = {"H": 0, "D": 1, "A": 2}
+
+
+def _result_card(row: pd.Series) -> str:
+    """One settled prediction: what was said, what happened, hit or miss."""
+    probs = [(float(row["p_h"]), "h"), (float(row["p_d"]), "d"), (float(row["p_a"]), "a")]
+    actual = str(row["actual"])
+    shown = _OUTCOME_IDX.get(actual)
+    segs = []
+    for i, (prob, cls) in enumerate(probs):
+        # The bar is dimmed except for the outcome that actually happened, so
+        # the eye goes straight to the probability that mattered.
+        extra = " mark" if i == shown else " dim"
+        label = _pct(prob) if prob >= 0.14 else ""
+        segs.append(f'<div class="seg {cls}{extra}" style="width:{prob * 100:.2f}%">{label}</div>')
+
+    hit = bool(row["correct"])
+    verdict = ('<span class="verdict hit">&#10003; hit</span>' if hit
+               else '<span class="verdict miss">&#10007; miss</span>')
+    gave = probs[shown][0] if shown is not None else float("nan")
+    score = ""
+    if pd.notna(row.get("home_goals")) and pd.notna(row.get("away_goals")):
+        score = f'<span class="score">{int(row["home_goals"])}&ndash;{int(row["away_goals"])}</span>'
+    when = pd.Timestamp(row["date"]).strftime("%d %b")
+    gave_txt = f"gave {_pct(gave)} to this result" if shown is not None else ""
+    return f"""      <div class="res">
+        <div class="res-top">
+          <span class="teams">{html.escape(str(row['home_team']))} v {html.escape(str(row['away_team']))}{score}</span>
+          {verdict}
+        </div>
+        <div class="bar small">{"".join(segs)}</div>
+        <p style="margin:6px 0 0"><small class="muted">{when} &middot; {gave_txt}</small></p>
+      </div>"""
+
+
+def _results_section(logged: pd.DataFrame, limit: int = 20) -> str:
+    """Scored predictions, newest first, with the running totals above them."""
+    from .track import summarise_log
+
+    if logged is None or logged.empty:
+        return ""
+    scored = logged[logged["correct"].notna()].sort_values("date", ascending=False)
+    if scored.empty:
+        return ("<section><h2>Track record</h2><p class=\"muted\">No predictions have "
+                "been settled yet. This fills in as results come in.</p></section>")
+
+    s = summarise_log(logged)
+    published = s["by_source"].get("published", {})
+    pub_line = ""
+    if published:
+        pub_line = (f'<div class="stat"><b>{published["mean"] * 100:.0f}%</b>'
+                    f'<span>of {int(published["size"])} published live</span></div>')
+
+    cards = "\n".join(_result_card(r) for _, r in scored.head(limit).iterrows())
+    more = ("" if len(scored) <= limit else
+            f'<p><small class="muted">Showing the {limit} most recent of '
+            f'{len(scored)} settled predictions.</small></p>')
+
+    return f"""  <section>
+    <h2>Track record</h2>
+    <p>Every prediction is written down before the match and scored once the
+    result is in. Nothing here is rewritten afterwards.</p>
+    <div class="stats">
+      <div class="stat"><b>{s["accuracy"] * 100:.0f}%</b><span>{s["correct"]} of {s["n"]} correct</span></div>
+      <div class="stat"><b>{s["mean_prob_actual"] * 100:.0f}%</b><span>average probability given to what happened</span></div>
+      {pub_line}
+    </div>
+{cards}
+{more}
+    <p><small class="muted">A &quot;hit&quot; means the most likely outcome was the
+    one that occurred. Because draws are rarely any single match&#39;s most likely
+    result, the average probability given to the actual outcome is the fairer
+    measure of the two.</small></p>
+  </section>
+
+"""
+
+
 def build(
     fixtures: pd.DataFrame,
     preds: pd.DataFrame | None = None,
     *,
+    logged: pd.DataFrame | None = None,
     out_dir: Path | None = None,
     repo_url: str | None = None,
 ) -> Path:
@@ -184,6 +282,7 @@ def build(
         cards = "\n".join(_fixture_card(r) for _, r in fixtures.iterrows())
 
     perf_table, cur_table = _performance(preds) if preds is not None else ("", "")
+    results = _results_section(logged) if logged is not None else ""
 
     figures = []
     for name, title, caption in CHARTS:
@@ -232,7 +331,7 @@ def build(
     form, Elo ratings and expected goals. They never see bookmaker prices.</small></p>
   </section>
 
-  <section>
+{results}  <section>
     <h2>How it actually performs</h2>
     <div class="note">
       <strong>This model does not beat the bookmakers.</strong>

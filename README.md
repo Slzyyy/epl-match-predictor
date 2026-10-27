@@ -327,6 +327,30 @@ actual          H     D     A
 
 ---
 
+## Track record
+
+Every prediction is appended to [`predictions/log.csv`](predictions/log.csv)
+when it is published, and scored once the match is played. Rows are never
+rewritten, so a later model cannot quietly improve the record, and the file is
+committed back by the weekly workflow — the history outlives the runner.
+
+```bash
+python -m epl.cli log --backfill   # record current picks, score settled ones
+```
+
+Each row carries a `source`:
+
+| source | meaning |
+|---|---|
+| `published` | logged from the live site before kick-off. The real record. |
+| `backtest` | backfilled for matches played before the log existed, from a model trained only on earlier seasons. Out-of-sample, but nobody saw it at the time. |
+
+The site shows both, labelled, with per-match hits and misses and the running
+totals. Two numbers are reported: plain accuracy, and the mean probability the
+model assigned to whatever actually happened. The second is the fairer
+measure, since draws are almost never any single match's most likely outcome,
+so accuracy structurally understates a calibrated forecaster.
+
 ## Website
 
 A static page of the current week's predictions, the model's running record and
@@ -389,6 +413,9 @@ python -m epl.cli importance --top 20
 
 # value-betting backtest: ROI, confidence intervals, no-skill control
 python -m epl.cli bet --scenarios close open best_close
+
+# record current predictions and score settled ones
+python -m epl.cli log --backfill
 
 # build the static site into site/
 python -m epl.cli site
@@ -520,7 +547,7 @@ two upcoming fixtures for the same team both see the state after their last
 *played* match rather than each other's blanks.
 
 ```bash
-python -m pytest     # 54 tests
+python -m pytest     # 63 tests
 ```
 
 ## What moved the needle, and what did not
@@ -598,7 +625,8 @@ src/epl/
   betting.py    value-betting backtest, staking rules and ROI statistics
   report.py     charts
   site.py       static site generator
+  track.py      prediction log: append, score, summarise
   cli.py        command line entry point
-tests/          54 tests, leakage-focused
+tests/          63 tests, leakage-focused
 reports/        charts and CSVs written by the CLI
 ```

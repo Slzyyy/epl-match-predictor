@@ -226,23 +226,30 @@ def add_form(long: pd.DataFrame) -> pd.DataFrame:
         played_date.groupby(long["team"], sort=False).ffill()
         .groupby(long["team"], sort=False).shift(1)
     )
-    long["rest_days"] = (long["date"] - last_played).dt.days
-    long.loc[long["season_matches"] == 0, "rest_days"] = np.nan
-    long["matches_last_14d"] = _played_matches_in_window(long, 14)
+    rest_days = (long["date"] - last_played).dt.days
+    rest_days = rest_days.where(long["season_matches"] != 0)
 
     # League experience, a proxy for "newly promoted".
-    long["epl_matches_played"] = (
-        played_num.groupby(long["team"], sort=False).cumsum() - played_num
-    )
     seasons_seen = (
         long.drop_duplicates(["team", "season"])
         .assign(n=lambda d: d.groupby("team", sort=False).cumcount())
         .set_index(["team", "season"])["n"]
     )
-    long["epl_seasons_before"] = pd.MultiIndex.from_arrays(
-        [long["team"], long["season"]]
-    ).map(seasons_seen)
-    return long.copy()  # de-fragment after the many inserts above
+    # Added in one go; inserting these one at a time fragments the frame.
+    tail = pd.DataFrame(
+        {
+            "rest_days": rest_days,
+            "matches_last_14d": _played_matches_in_window(long, 14),
+            "epl_matches_played": (
+                played_num.groupby(long["team"], sort=False).cumsum() - played_num
+            ),
+            "epl_seasons_before": pd.MultiIndex.from_arrays(
+                [long["team"], long["season"]]
+            ).map(seasons_seen),
+        },
+        index=long.index,
+    )
+    return pd.concat([long, tail], axis=1)
 
 
 # --------------------------------------------------------------------------
@@ -496,8 +503,12 @@ def build_features(matches: pd.DataFrame, *, include_odds: bool = False) -> pd.D
     home.columns = [f"home_{c}" for c in feat_cols]
     away.columns = [f"away_{c}" for c in feat_cols]
 
-    out = matches.set_index("match_id")
-    out = out.join(home).join(away)
+    # Joined in one concat: two successive .join() calls leave the frame
+    # fragmented across ~300 columns.
+    # .copy() consolidates the blocks: `matches` arrives fragmented from the
+    # xG and availability joins, and concat would carry that through.
+    base = matches.set_index("match_id").copy()
+    out = pd.concat([base, home.reindex(base.index), away.reindex(base.index)], axis=1)
     out = out.reset_index()
     out = add_elo(out)
     out = add_head_to_head(out)

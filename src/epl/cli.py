@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -34,6 +35,8 @@ from .lineups import attach_availability, download_season_rosters, load_availabi
 from .xg import attach_xg, load_xg
 from .report import write_all
 from .site import SITE_DIR, build as build_site
+from .track import (LOG_PATH, append_predictions, backfill_from_backtest,
+                    load_log, save_log, score_log, summarise_log)
 
 FEATURES_PATH = DATA_PROCESSED / "features.pkl"
 PREDS_PATH = DATA_PROCESSED / "backtest_preds.pkl"
@@ -141,9 +144,44 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_log(args) -> int:
+    """Record the current predictions and score any that have now been played."""
+    logged = load_log()
+    before = len(logged)
+
+    if not args.no_predict:
+        fixtures = predict_fixtures(
+            kind=args.main_model, refresh=not args.no_refresh,
+            include_odds=args.use_odds, limit_days=args.days,
+            feature_set=args.feature_set,
+        )
+        logged = append_predictions(logged, fixtures, source="published")
+
+    if args.backfill and PREDS_PATH.exists():
+        preds = pd.read_pickle(PREDS_PATH)
+        season = args.season or str(preds["season"].max())
+        logged = backfill_from_backtest(logged, preds, model=args.main_model, season=season)
+
+    feats = _load_features(args)
+    logged = score_log(logged, feats)
+    path = save_log(logged)
+
+    s = summarise_log(logged)
+    print(f"{len(logged)} predictions logged ({len(logged) - before:+d} new), "
+          f"{s.get('pending', 0)} awaiting results")
+    if s["n"]:
+        print(f"scored: {s['correct']}/{s['n']} correct = {s['accuracy']:.1%}; "
+              f"mean probability given to the actual result {s['mean_prob_actual']:.1%}")
+        for src, row in s["by_source"].items():
+            print(f"  {src:<10} {int(row['size']):>4} matches  {row['mean']:.1%}")
+    print(f"wrote {path}")
+    return 0
+
+
 def cmd_site(args) -> int:
     out = Path(args.out) if args.out else SITE_DIR
     preds = pd.read_pickle(PREDS_PATH) if PREDS_PATH.exists() else None
+    logged = load_log()
     if preds is None:
         print("note: no cached backtest, so the performance section will be "
               "omitted; run `backtest` first", file=sys.stderr)
@@ -154,7 +192,7 @@ def cmd_site(args) -> int:
         limit_days=args.days,
         feature_set=args.feature_set,
     )
-    dest = build_site(fixtures, preds, out_dir=out, repo_url=args.repo_url)
+    dest = build_site(fixtures, preds, logged=logged, out_dir=out, repo_url=args.repo_url)
     print(f"{len(fixtures)} fixtures; wrote {dest}")
     return 0
 
@@ -297,6 +335,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="ablate the squad-availability features")
     b.set_defaults(func=cmd_backtest)
 
+    lg = sub.add_parser("log", parents=[common],
+                        help="record current predictions and score past ones")
+    lg.add_argument("--days", type=int, default=10, help="fixture horizon")
+    lg.add_argument("--no-refresh", action="store_true")
+    lg.add_argument("--no-predict", action="store_true",
+                    help="only score existing entries, do not add new ones")
+    lg.add_argument("--backfill", action="store_true",
+                    help="seed from out-of-sample backtest predictions")
+    lg.add_argument("--season", default=None, help="season to backfill (default: latest)")
+    lg.set_defaults(func=cmd_log)
+
     st = sub.add_parser("site", parents=[common], help="build the static website")
     st.add_argument("--out", default=None, help="output directory (default: site/)")
     st.add_argument("--days", type=int, default=10, help="fixture horizon")
@@ -328,6 +377,10 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_predict)
 
     args = parser.parse_args(argv)
+    # pandas' fragmentation hint is advisory, about block layout rather than
+    # correctness, and the wide feature frame triggers it unavoidably. It is
+    # noise in CI logs, so it is silenced at the CLI boundary only.
+    warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(message)s",
