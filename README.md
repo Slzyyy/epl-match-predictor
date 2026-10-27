@@ -327,6 +327,28 @@ actual          H     D     A
 
 ---
 
+## Club pages
+
+Every club name on the site links to a page for that club: league position and
+season record, last five results, top ten scorers and assist-makers with their
+xG and xA, clean sheets by goalkeeper, and honours.
+
+All of it is computed from data the project already holds, with two
+exceptions, both called out on the page itself:
+
+- **The club summary** is the opening two sentences of the Wikipedia article,
+  cached in `data/raw/`, shown with attribution and a link (CC BY-SA).
+- **Honours are hand-compiled** in [`club_data/trophies.json`](club_data/trophies.json).
+  No free structured feed carries them — Wikidata models a football club's
+  `award received` as media awards such as BBC Team of the Year, not league
+  titles — so unlike every other figure on the site these are not derived from
+  data. They are marked as indicative, each page links to the club's Wikipedia
+  article for the authoritative list, and correcting one is a plain edit to
+  that JSON file with no code change.
+
+Pages are regenerated on every build, and pages for clubs no longer in the
+league are deleted rather than left to go stale.
+
 ## Track record
 
 Every prediction is appended to [`predictions/log.csv`](predictions/log.csv)
@@ -457,6 +479,11 @@ average from 2019-20, giving 5,380 matches with full open/close coverage. The
 pair always comes from one firm, so the drift is never one bookmaker's opening
 price against another's close.
 
+football-data also lags and goes offline. Any match Understat has settled
+that football-data has not yet published is appended with its score, so an
+outage cannot silently freeze the form features behind every prediction. Those
+rows carry no shots, corners or odds, which the trees handle natively.
+
 **Fixtures** come from Understat rather than football-data. The same payload
 that carries the xG also carries the full 380-match calendar, flagged played
 or not, so the remaining fixture list runs to the end of May and is never
@@ -547,7 +574,7 @@ two upcoming fixtures for the same team both see the state after their last
 *played* match rather than each other's blanks.
 
 ```bash
-python -m pytest     # 63 tests
+python -m pytest     # 74 tests
 ```
 
 ## What moved the needle, and what did not
@@ -625,8 +652,9 @@ src/epl/
   betting.py    value-betting backtest, staking rules and ROI statistics
   report.py     charts
   site.py       static site generator
+  clubs.py      per-club season statistics, honours, Wikipedia summaries
   track.py      prediction log: append, score, summarise
   cli.py        command line entry point
-tests/          63 tests, leakage-focused
+tests/          74 tests, leakage-focused
 reports/        charts and CSVs written by the CLI
 ```

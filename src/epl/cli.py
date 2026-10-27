@@ -32,8 +32,9 @@ from .metrics import calibration_table
 from .model import MODEL_KINDS, feature_importance, fit_model
 from .predict import predict_fixtures
 from .lineups import attach_availability, download_season_rosters, load_availability
-from .xg import attach_xg, load_xg
+from .xg import attach_xg, load_xg, top_up_from_understat
 from .report import write_all
+from .clubs import club_profile, fetch_summaries, league_table, load_trophies, player_stats
 from .site import SITE_DIR, build as build_site
 from .track import (LOG_PATH, append_predictions, backfill_from_backtest,
                     load_log, save_log, score_log, summarise_log)
@@ -53,7 +54,9 @@ def build_feature_table(
 ) -> pd.DataFrame:
     matches = load_matches(first, last, refresh=refresh)
     if with_xg:
-        matches = attach_xg(matches, load_xg(refresh=refresh))
+        xg = load_xg(refresh=refresh)
+        matches = top_up_from_understat(matches, xg)
+        matches = attach_xg(matches, xg)
         matches = attach_availability(matches, load_availability())
     feats = build_features(matches, include_odds=include_odds)
     if cache:
@@ -182,6 +185,7 @@ def cmd_site(args) -> int:
     out = Path(args.out) if args.out else SITE_DIR
     preds = pd.read_pickle(PREDS_PATH) if PREDS_PATH.exists() else None
     logged = load_log()
+    feats = _load_features(args)
     if preds is None:
         print("note: no cached backtest, so the performance section will be "
               "omitted; run `backtest` first", file=sys.stderr)
@@ -192,8 +196,29 @@ def cmd_site(args) -> int:
         limit_days=args.days,
         feature_set=args.feature_set,
     )
-    dest = build_site(fixtures, preds, logged=logged, out_dir=out, repo_url=args.repo_url)
-    print(f"{len(fixtures)} fixtures; wrote {dest}")
+    profiles = None
+    season_label = ""
+    if not args.no_clubs:
+        season_start = int(feats["season_start"].max())
+        season_label = str(feats.loc[feats["season_start"] == season_start, "season"].iloc[0])
+        teams = sorted(
+            set(feats.loc[feats["season_start"] == season_start, "home_team"].dropna())
+            | set(feats.loc[feats["season_start"] == season_start, "away_team"].dropna())
+        )
+        players = player_stats(season_start)
+        table = league_table(feats, season_start)
+        trophies = load_trophies()
+        summaries = fetch_summaries(teams, refresh=False)
+        profiles = [
+            club_profile(t, feats, players, season_start, table=table,
+                         trophies=trophies, summaries=summaries)
+            for t in teams
+        ]
+
+    dest = build_site(fixtures, preds, logged=logged, profiles=profiles,
+                      season_label=season_label, out_dir=out, repo_url=args.repo_url)
+    n_clubs = len(profiles) if profiles else 0
+    print(f"{len(fixtures)} fixtures, {n_clubs} club pages; wrote {dest}")
     return 0
 
 
@@ -351,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--days", type=int, default=10, help="fixture horizon")
     st.add_argument("--no-refresh", action="store_true")
     st.add_argument("--repo-url", default="https://github.com/Slzyyy/epl-match-predictor")
+    st.add_argument("--no-clubs", action="store_true", help="skip the per-club pages")
     st.set_defaults(func=cmd_site)
 
     bt = sub.add_parser("bet", parents=[common], help="value-betting backtest")

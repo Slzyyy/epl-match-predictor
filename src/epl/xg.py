@@ -16,6 +16,7 @@ import json
 import logging
 import time
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -242,3 +243,56 @@ def load_upcoming_fixtures(
     if not frames:
         return pd.DataFrame(columns=["date", "time", "home_team", "away_team"])
     return pd.concat(frames, ignore_index=True).sort_values("date").reset_index(drop=True)
+
+
+def top_up_from_understat(matches: pd.DataFrame, xg: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Add results Understat has but football-data does not yet.
+
+    football-data is the primary source, but it goes down and it lags. Understat
+    carries the score for every played match, so any fixture it has settled that
+    is missing here is appended with its goals and result. The columns
+    football-data would have supplied (shots, corners, cards, odds) stay NaN,
+    which the trees handle natively.
+
+    Without this, a football-data outage silently freezes the form features
+    behind every prediction, which is worse than a few rows with missing
+    columns.
+    """
+    if xg is None:
+        xg = load_xg()
+    if xg.empty:
+        return matches
+
+    have = set(map(tuple, matches[["season_start", "home_team", "away_team"]]
+                   .astype({"season_start": "int64"}).astype(str).to_numpy()))
+    cand = xg[xg["us_home_goals"].notna() & xg["us_away_goals"].notna()].copy()
+    keys = cand[["season_start", "home_team", "away_team"]].astype(
+        {"season_start": "int64"}).astype(str).to_numpy()
+    missing = cand[[tuple(k) not in have for k in keys]]
+    if missing.empty:
+        return matches
+
+    log.info("topping up %d match(es) from Understat", len(missing))
+    hg = missing["us_home_goals"].to_numpy(dtype=float)
+    ag = missing["us_away_goals"].to_numpy(dtype=float)
+    extra = pd.DataFrame(
+        {
+            "date": missing["date"].to_numpy(),
+            "season": missing["season"].to_numpy(),
+            "season_start": missing["season_start"].to_numpy(),
+            "home_team": missing["home_team"].to_numpy(),
+            "away_team": missing["away_team"].to_numpy(),
+            "home_goals": hg,
+            "away_goals": ag,
+            "result": np.where(hg > ag, "H", np.where(hg == ag, "D", "A")),
+        }
+    )
+    # reindex (rather than assigning pd.NA per column) so the columns we do not
+    # have arrive as float NaN and keep the numeric dtypes of the frame we are
+    # concatenating onto.
+    extra = extra.reindex(columns=matches.columns)
+    out = pd.concat([matches, extra], ignore_index=True)
+    out = out.sort_values(["date", "home_team"], kind="stable").reset_index(drop=True)
+    # match_id is positional, so it has to be reissued after inserting rows.
+    out["match_id"] = out.index
+    return out

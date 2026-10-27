@@ -1127,3 +1127,189 @@ def test_site_track_record_handles_nothing_settled_yet(tmp_path):
     logged = append_predictions(empty_log(), _fx("Arsenal", "Chelsea"))
     page = build(pd.DataFrame(), None, logged=logged, out_dir=tmp_path).read_text()
     assert "No predictions have been settled yet" in page
+
+
+# --------------------------------------------------------------------------
+# club pages
+# --------------------------------------------------------------------------
+def test_slug_handles_punctuation_and_accents():
+    from epl.clubs import slug
+
+    assert slug("Nott'm Forest") == "nottm-forest"
+    assert slug("Man City") == "man-city"
+    assert slug("Brighton & Hove") == "brighton-hove"
+
+
+def test_season_summary_counts_results_from_both_venues(toy_matches):
+    from epl.clubs import season_summary
+
+    s = season_summary(toy_matches, "A", 2018)
+    played = toy_matches[
+        (toy_matches["season_start"] == 2018)
+        & ((toy_matches["home_team"] == "A") | (toy_matches["away_team"] == "A"))
+    ]
+    assert s["played"] == len(played)
+    assert s["won"] + s["drawn"] + s["lost"] == s["played"]
+    assert s["points"] == s["won"] * 3 + s["drawn"]
+    # A is the strongest side, so it never loses; the one dropped result is the
+    # away trip to B, where home advantage makes it a draw.
+    assert s["lost"] == 0
+    assert s["won"] == s["played"] - s["drawn"]
+
+
+def test_clean_sheets_counted_from_the_club_perspective(toy_matches):
+    from epl.clubs import season_matches, season_summary
+
+    s = season_summary(toy_matches, "F", 2018)
+    games = season_matches(toy_matches, "F", 2018)
+    assert s["clean_sheets"] == int((games["ga"] == 0).sum())
+    assert s["goals_against"] == int(games["ga"].sum())
+
+
+def test_recent_form_is_newest_first_and_capped(toy_matches):
+    from epl.clubs import recent_form
+
+    form = recent_form(toy_matches, "B", 2018, n=5)
+    assert len(form) == 5
+    assert list(form["date"]) == sorted(form["date"], reverse=True)
+    assert set(form["outcome"]) <= {"W", "D", "L"}
+
+
+def test_away_results_are_not_inverted(toy_matches):
+    """An away win must read as a win for the away side, not the home side."""
+    from epl.clubs import season_matches
+
+    games = season_matches(toy_matches, "F", 2018)
+    away = games[~games["is_home"]]
+    for row in away.itertuples():
+        src = toy_matches[
+            (toy_matches["home_team"] == row.opponent)
+            & (toy_matches["away_team"] == "F")
+            & (toy_matches["season_start"] == 2018)
+        ].iloc[0]
+        assert row.gf == src["away_goals"]
+        assert row.ga == src["home_goals"]
+
+
+def test_league_table_is_ordered_and_positions_are_unique(toy_matches):
+    from epl.clubs import league_table
+
+    tbl = league_table(toy_matches, 2018)
+    assert list(tbl["position"]) == list(range(1, len(tbl) + 1))
+    assert list(tbl["points"]) == sorted(tbl["points"], reverse=True)
+    assert tbl.iloc[0]["team"] == "A"  # A wins every match in the toy league
+
+
+def test_trophies_file_is_valid_and_covers_the_league():
+    """The hand-maintained file must stay parseable and complete."""
+    import json
+
+    from epl.clubs import CLUB_DATA, load_trophies
+
+    trophies = load_trophies()
+    clubs = {k: v for k, v in trophies.items() if not k.startswith("_")}
+    assert len(clubs) >= 20
+    titles = json.loads((CLUB_DATA / "wikipedia_titles.json").read_text())
+    assert set(titles) <= set(clubs), "a club has a Wikipedia title but no honours entry"
+    for club, comps in clubs.items():
+        for comp, years in comps.items():
+            assert isinstance(years, list), f"{club}/{comp}"
+            for y in years:
+                assert isinstance(y, int) and 1870 <= y <= 2030, f"{club}/{comp}: {y}"
+
+
+def test_club_page_renders_every_section(tmp_path):
+    from epl.site import build_club_pages
+
+    profile = {
+        "team": "Arsenal", "slug": "arsenal", "position": 2,
+        "season": {"played": 8, "won": 7, "drawn": 0, "lost": 1, "goals_for": 10,
+                   "goals_against": 5, "goal_difference": 5, "clean_sheets": 5,
+                   "failed_to_score": 1, "points": 21},
+        "form": pd.DataFrame({
+            "date": [pd.Timestamp("2026-10-24")], "opponent": ["Everton"],
+            "is_home": [True], "gf": [2], "ga": [0], "outcome": ["W"],
+        }),
+        "scorers": pd.DataFrame({"player": ["Saka"], "apps": [8], "minutes": [700],
+                                 "goals": [5], "xg": [4.2]}),
+        "assists": pd.DataFrame({"player": ["Odegaard"], "apps": [8], "minutes": [690],
+                                 "assists": [4], "xa": [3.1]}),
+        "keepers": pd.DataFrame({"player": ["Raya"], "starts": [8], "clean_sheets": [5]}),
+        "trophies": {"League title": [1998, 2002, 2004], "FA Cup": [2020]},
+        "wiki": {"extract": "Arsenal is a football club.", "url": "https://example.org/a"},
+    }
+    (page,) = build_club_pages([profile], "2026-27", tmp_path)
+    html_text = page.read_text()
+    for expected in ["Arsenal", "Recent form", "Top scorers", "Most assists",
+                     "Clean sheets", "Honours", "Saka", "Odegaard", "Raya",
+                     "League title", "1998, 2002, 2004", "CC BY-SA", "hand-compiled"]:
+        assert expected in html_text, f"missing {expected!r}"
+    assert 'href="../index.html"' in html_text
+
+
+def test_club_page_survives_a_club_with_no_honours_or_players(tmp_path):
+    from epl.site import build_club_pages
+
+    profile = {
+        "team": "Brentford", "slug": "brentford", "position": None,
+        "season": {"played": 0},
+        "form": pd.DataFrame(columns=["date", "opponent", "is_home", "gf", "ga", "outcome"]),
+        "scorers": pd.DataFrame(columns=["player", "apps", "minutes", "goals", "xg"]),
+        "assists": pd.DataFrame(columns=["player", "apps", "minutes", "assists", "xa"]),
+        "keepers": pd.DataFrame(columns=["player", "starts", "clean_sheets"]),
+        "trophies": {"League title": [], "FA Cup": []},
+        "wiki": {},
+    }
+    (page,) = build_club_pages([profile], "2026-27", tmp_path)
+    text = page.read_text()
+    assert "No major senior honours recorded" in text
+    assert "has not started" in text
+    assert "<html" in text and "</html>" in text
+
+
+def test_index_links_club_names_only_when_a_page_exists(tmp_path):
+    from epl.site import build
+
+    fx = pd.DataFrame({
+        "date": [pd.Timestamp("2026-11-01")],
+        "home_team": ["Arsenal"], "away_team": ["Chelsea"],
+        "p_home": [0.5], "p_draw": [0.3], "p_away": [0.2],
+    })
+    profile = {
+        "team": "Arsenal", "slug": "arsenal", "position": 1,
+        "season": {"played": 1, "won": 1, "drawn": 0, "lost": 0, "goals_for": 2,
+                   "goals_against": 0, "goal_difference": 2, "clean_sheets": 1,
+                   "failed_to_score": 0, "points": 3},
+        "form": pd.DataFrame(columns=["date", "opponent", "is_home", "gf", "ga", "outcome"]),
+        "scorers": pd.DataFrame(columns=["player", "apps", "minutes", "goals", "xg"]),
+        "assists": pd.DataFrame(columns=["player", "apps", "minutes", "assists", "xa"]),
+        "keepers": pd.DataFrame(columns=["player", "starts", "clean_sheets"]),
+        "trophies": {}, "wiki": {},
+    }
+    page = build(fx, None, profiles=[profile], season_label="2026-27",
+                 out_dir=tmp_path).read_text()
+    assert '<a href="clubs/arsenal.html">Arsenal</a>' in page
+    # Chelsea has no profile, so it must stay plain text rather than a dead link.
+    assert 'clubs/chelsea.html' not in page
+    assert "Chelsea" in page
+
+
+def test_stale_club_pages_are_removed(tmp_path):
+    """A club that drops out of the league must not leave an orphan page."""
+    from epl.site import build_club_pages
+
+    clubs = tmp_path / "clubs"
+    clubs.mkdir()
+    (clubs / "relegated-town.html").write_text("old")
+    profile = {
+        "team": "Arsenal", "slug": "arsenal", "position": 1,
+        "season": {"played": 0},
+        "form": pd.DataFrame(columns=["date", "opponent", "is_home", "gf", "ga", "outcome"]),
+        "scorers": pd.DataFrame(columns=["player", "apps", "minutes", "goals", "xg"]),
+        "assists": pd.DataFrame(columns=["player", "apps", "minutes", "assists", "xa"]),
+        "keepers": pd.DataFrame(columns=["player", "starts", "clean_sheets"]),
+        "trophies": {}, "wiki": {},
+    }
+    build_club_pages([profile], "2026-27", tmp_path)
+    assert not (clubs / "relegated-town.html").exists()
+    assert (clubs / "arsenal.html").exists()

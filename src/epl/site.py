@@ -106,6 +106,29 @@ figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
 }
 .stat b{display:block; font-size:1.5rem; line-height:1.2; letter-spacing:-.02em}
 .stat span{color:var(--muted); font-size:.78rem}
+.pill{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border-radius:6px; margin-right:4px;
+  font-size:.78rem; font-weight:700; color:#fff;
+}
+.pill.W{background:var(--away)} .pill.D{background:var(--draw)} .pill.L{background:#c2504a}
+.formrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px}
+.back{display:inline-block; margin-bottom:18px; font-size:.88rem}
+.club-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px}
+.club-grid a{
+  display:block; padding:10px 12px; border:1px solid var(--line);
+  border-radius:var(--radius); background:var(--panel);
+  text-decoration:none; color:var(--ink); font-weight:600; font-size:.92rem;
+}
+.club-grid a:hover{border-color:var(--home)}
+.club-grid span{display:block; font-weight:400; color:var(--muted); font-size:.78rem}
+.teams a{color:inherit; text-decoration:none; border-bottom:1px dotted var(--muted)}
+.teams a:hover{border-bottom-color:var(--home); color:var(--home)}
+.honours{columns:2; column-gap:24px; font-size:.88rem}
+.honours div{break-inside:avoid; margin-bottom:10px}
+.honours b{display:block}
+.honours span{color:var(--muted); font-size:.82rem}
+@media (max-width:560px){.honours{columns:1}}
 footer{margin-top:56px; padding-top:20px; border-top:1px solid var(--line);
        color:var(--muted); font-size:.84rem}
 @media (max-width:560px){
@@ -121,7 +144,16 @@ def _pct(x: float) -> str:
     return f"{x * 100:.0f}%"
 
 
-def _fixture_card(row: pd.Series) -> str:
+def _team_link(team: str, linked: set[str] | None) -> str:
+    """Club name, linked to its page when one exists."""
+    safe = html.escape(str(team))
+    if not linked or team not in linked:
+        return safe
+    from .clubs import slug
+    return f'<a href="clubs/{slug(team)}.html">{safe}</a>'
+
+
+def _fixture_card(row: pd.Series, linked: set[str] | None = None) -> str:
     probs = [(row["p_home"], "h"), (row["p_draw"], "d"), (row["p_away"], "a")]
     # Labels are dropped from slivers too narrow to hold them.
     segs = "".join(
@@ -134,7 +166,7 @@ def _fixture_card(row: pd.Series) -> str:
         kick += f" &middot; {html.escape(str(row['time']))}"
     return f"""      <div class="fixture">
         <div class="fx-top">
-          <span class="teams">{html.escape(str(row['home_team']))} v {html.escape(str(row['away_team']))}</span>
+          <span class="teams">{_team_link(row['home_team'], linked)} v {_team_link(row['away_team'], linked)}</span>
           <span class="kick">{kick}</span>
         </div>
         <div class="bar">{segs}</div>
@@ -188,7 +220,7 @@ def _performance(preds: pd.DataFrame) -> tuple[str, str]:
 _OUTCOME_IDX = {"H": 0, "D": 1, "A": 2}
 
 
-def _result_card(row: pd.Series) -> str:
+def _result_card(row: pd.Series, linked: set[str] | None = None) -> str:
     """One settled prediction: what was said, what happened, hit or miss."""
     probs = [(float(row["p_h"]), "h"), (float(row["p_d"]), "d"), (float(row["p_a"]), "a")]
     actual = str(row["actual"])
@@ -212,7 +244,7 @@ def _result_card(row: pd.Series) -> str:
     gave_txt = f"gave {_pct(gave)} to this result" if shown is not None else ""
     return f"""      <div class="res">
         <div class="res-top">
-          <span class="teams">{html.escape(str(row['home_team']))} v {html.escape(str(row['away_team']))}{score}</span>
+          <span class="teams">{_team_link(row['home_team'], linked)} v {_team_link(row['away_team'], linked)}{score}</span>
           {verdict}
         </div>
         <div class="bar small">{"".join(segs)}</div>
@@ -220,7 +252,7 @@ def _result_card(row: pd.Series) -> str:
       </div>"""
 
 
-def _results_section(logged: pd.DataFrame, limit: int = 20) -> str:
+def _results_section(logged: pd.DataFrame, limit: int = 20, linked: set[str] | None = None) -> str:
     """Scored predictions, newest first, with the running totals above them."""
     from .track import summarise_log
 
@@ -238,7 +270,7 @@ def _results_section(logged: pd.DataFrame, limit: int = 20) -> str:
         pub_line = (f'<div class="stat"><b>{published["mean"] * 100:.0f}%</b>'
                     f'<span>of {int(published["size"])} published live</span></div>')
 
-    cards = "\n".join(_result_card(r) for _, r in scored.head(limit).iterrows())
+    cards = "\n".join(_result_card(r, linked) for _, r in scored.head(limit).iterrows())
     more = ("" if len(scored) <= limit else
             f'<p><small class="muted">Showing the {limit} most recent of '
             f'{len(scored)} settled predictions.</small></p>')
@@ -263,11 +295,211 @@ def _results_section(logged: pd.DataFrame, limit: int = 20) -> str:
 """
 
 
+# --------------------------------------------------------------------------
+# club pages
+# --------------------------------------------------------------------------
+def _form_pills(form: pd.DataFrame) -> str:
+    if form.empty:
+        return '<p class="muted">No matches played yet this season.</p>'
+    pills = "".join(
+        f'<span class="pill {r.outcome}" title="{html.escape(str(r.opponent))} '
+        f'{int(r.gf)}-{int(r.ga)}">{r.outcome}</span>'
+        for r in form.itertuples()
+    )
+    rows = []
+    for r in form.itertuples():
+        where = "H" if r.is_home else "A"
+        rows.append({
+            "Date": pd.Timestamp(r.date).strftime("%d %b"),
+            "": where,
+            "Opponent": html.escape(str(r.opponent)),
+            "Score": f"{int(r.gf)}&ndash;{int(r.ga)}",
+            "Result": r.outcome,
+        })
+    table = _table(pd.DataFrame(rows), {c: c for c in rows[0]})
+    return f'<div class="formrow">{pills}<small class="muted">most recent first</small></div>{table}'
+
+
+def _player_table(df: pd.DataFrame, value: str, label: str, expected: str, exp_label: str) -> str:
+    if df.empty:
+        return f'<p class="muted">No {label.lower()} recorded yet this season.</p>'
+    show = pd.DataFrame({
+        "Player": [html.escape(str(p)) for p in df["player"]],
+        "Apps": df["apps"].astype(int).to_numpy(),
+        "Mins": df["minutes"].astype(int).to_numpy(),
+        label: df[value].astype(int).to_numpy(),
+        exp_label: df[expected].astype(float).round(1).to_numpy(),
+    })
+    return _table(show, {c: c for c in show.columns})
+
+
+def _honours(trophies: dict, wiki_url: str) -> str:
+    comps = {k: v for k, v in trophies.items() if not k.startswith("_") and v}
+    if not comps:
+        link = (f' <a href="{html.escape(wiki_url)}">Wikipedia</a>' if wiki_url else "")
+        return ('<p class="muted">No major senior honours recorded. See'
+                f'{link or " the club&#39;s page"} for the full list.</p>')
+    blocks = []
+    for comp, years in sorted(comps.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        yrs = ", ".join(str(y) for y in sorted(years))
+        blocks.append(
+            f'<div><b>{html.escape(comp)} &times;{len(years)}</b><span>{yrs}</span></div>'
+        )
+    return f'<div class="honours">{"".join(blocks)}</div>'
+
+
+def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
+    team = profile["team"]
+    s = profile["season"]
+    wiki = profile.get("wiki") or {}
+    pos = profile["position"]
+
+    if s.get("played"):
+        tiles = [
+            (f'{pos}' if pos else "&ndash;", "in the table"),
+            (f'{s["points"]}', f'points from {s["played"]} matches'),
+            (f'{s["won"]}&ndash;{s["drawn"]}&ndash;{s["lost"]}', "won / drawn / lost"),
+            (f'{s["clean_sheets"]}', "clean sheets"),
+            (f'{s["goals_for"]}:{s["goals_against"]}', "goals for / against"),
+        ]
+        stats = '<div class="stats">' + "".join(
+            f'<div class="stat"><b>{v}</b><span>{l}</span></div>' for v, l in tiles
+        ) + "</div>"
+    else:
+        stats = '<p class="muted">The season has not started for this club yet.</p>'
+
+    blurb = ""
+    if wiki.get("extract"):
+        link = (f' <a href="{html.escape(wiki["url"])}">Read more on Wikipedia</a>.'
+                if wiki.get("url") else "")
+        blurb = (f'<p>{html.escape(wiki["extract"])}</p>'
+                 f'<p><small class="muted">Summary from Wikipedia, CC BY-SA.{link}</small></p>')
+
+    keepers = profile["keepers"]
+    if keepers.empty:
+        keeper_html = '<p class="muted">No goalkeeper appearances recorded yet.</p>'
+    else:
+        kt = pd.DataFrame({
+            "Goalkeeper": [html.escape(str(p)) for p in keepers["player"]],
+            "Starts": keepers["starts"].astype(int).to_numpy(),
+            "Clean sheets": keepers["clean_sheets"].astype(int).to_numpy(),
+        })
+        keeper_html = _table(kt, {c: c for c in kt.columns})
+
+    repo_line = (f'<a href="{html.escape(repo_url)}">Source and methodology</a> &middot; '
+                 if repo_url else "")
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(team)} &mdash; {html.escape(season_label)}</title>
+<meta name="description" content="{html.escape(team)} season statistics: form, top scorers, assists, clean sheets and honours.">
+<style>{CSS}</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <a class="back" href="../index.html">&larr; All fixtures and predictions</a>
+  <h1>{html.escape(team)}</h1>
+  <p class="sub">{html.escape(season_label)} season</p>
+</header>
+
+<main>
+  <section>
+{stats}
+{blurb}
+  </section>
+
+  <section>
+    <h2>Recent form</h2>
+{_form_pills(profile["form"])}
+  </section>
+
+  <section>
+    <h2>Top scorers</h2>
+{_player_table(profile["scorers"], "goals", "Goals", "xg", "xG")}
+    <h3>Most assists</h3>
+{_player_table(profile["assists"], "assists", "Assists", "xa", "xA")}
+    <h3>Clean sheets</h3>
+{keeper_html}
+    <p><small class="muted">Player data from Understat, this season only.
+    xG and xA are expected goals and assists &mdash; the quality of the chances
+    created, which says more about repeatable performance than the raw count.</small></p>
+  </section>
+
+  <section>
+    <h2>Honours</h2>
+{_honours(profile["trophies"], wiki.get("url", ""))}
+    <p><small class="muted">Major senior honours, hand-compiled: unlike every
+    other figure on this site these are not computed from data, because no free
+    structured feed carries club honours. Treat them as indicative and check
+    the club&#39;s Wikipedia page for the authoritative list.</small></p>
+  </section>
+</main>
+
+<footer>
+  {repo_line}Match data from football-data.co.uk, player data from Understat.
+  For interest only &mdash; not betting advice.
+</footer>
+</div>
+</body>
+</html>
+"""
+
+
+def build_club_pages(
+    profiles: list[dict], season_label: str, out_dir: Path, repo_url: str | None = None
+) -> list[Path]:
+    """Write one page per club into ``<out_dir>/clubs``."""
+    club_dir = Path(out_dir) / "clubs"
+    club_dir.mkdir(parents=True, exist_ok=True)
+    # Clear stale pages first: clubs get relegated and slugs change, and an
+    # orphan page would otherwise sit there being wrong for years.
+    expected = {f"{p['slug']}.html" for p in profiles}
+    for old_page in club_dir.glob("*.html"):
+        if old_page.name not in expected:
+            old_page.unlink()
+    written = []
+    for profile in profiles:
+        dest = club_dir / f"{profile['slug']}.html"
+        dest.write_text(_club_page(profile, season_label, repo_url), encoding="utf-8")
+        written.append(dest)
+    return written
+
+
+def _club_index(profiles: list[dict]) -> str:
+    """The grid of club links on the front page."""
+    if not profiles:
+        return ""
+    ordered = sorted(profiles, key=lambda p: (p["position"] or 99, p["team"]))
+    cards = []
+    for p in ordered:
+        s = p["season"]
+        line = (f'{p["position"]}. {s["points"]} pts from {s["played"]}'
+                if p["position"] and s.get("played") else "season not started")
+        cards.append(
+            f'<a href="clubs/{p["slug"]}.html">{html.escape(p["team"])}<span>{line}</span></a>'
+        )
+    return f"""  <section>
+    <h2>Clubs</h2>
+    <p>Form, scorers, assists, clean sheets and honours for every club this season.</p>
+    <div class="club-grid">
+{"".join(cards)}
+    </div>
+  </section>
+
+"""
+
+
 def build(
     fixtures: pd.DataFrame,
     preds: pd.DataFrame | None = None,
     *,
     logged: pd.DataFrame | None = None,
+    profiles: list[dict] | None = None,
+    season_label: str = "",
     out_dir: Path | None = None,
     repo_url: str | None = None,
 ) -> Path:
@@ -275,14 +507,20 @@ def build(
     out_dir = Path(out_dir) if out_dir else SITE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    linked: set[str] = set()
+    if profiles:
+        build_club_pages(profiles, season_label, out_dir, repo_url)
+        linked = {p["team"] for p in profiles}
+
     if fixtures.empty:
         cards = ('<p class="muted">No Premier League fixtures are published right now. '
                  "This page refreshes when the next round is listed.</p>")
     else:
-        cards = "\n".join(_fixture_card(r) for _, r in fixtures.iterrows())
+        cards = "\n".join(_fixture_card(r, linked) for _, r in fixtures.iterrows())
 
     perf_table, cur_table = _performance(preds) if preds is not None else ("", "")
-    results = _results_section(logged) if logged is not None else ""
+    results = _results_section(logged, linked=linked) if logged is not None else ""
+    clubs = _club_index(profiles) if profiles else ""
 
     figures = []
     for name, title, caption in CHARTS:
@@ -331,7 +569,7 @@ def build(
     form, Elo ratings and expected goals. They never see bookmaker prices.</small></p>
   </section>
 
-{results}  <section>
+{clubs}{results}  <section>
     <h2>How it actually performs</h2>
     <div class="note">
       <strong>This model does not beat the bookmakers.</strong>

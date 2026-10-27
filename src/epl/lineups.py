@@ -38,7 +38,8 @@ _HEADERS = {
 
 # Fields kept from each roster entry; the rest is match detail we do not need.
 _KEEP = ("player_id", "player", "position", "positionOrder", "time",
-         "goals", "xG", "xA", "xGChain", "red_card")
+         "goals", "assists", "own_goals", "xG", "xA", "xGChain",
+         "yellow_card", "red_card")
 
 
 def _roster_path(year: int) -> Path:
@@ -136,7 +137,9 @@ def load_season_rosters(year: int) -> pd.DataFrame:
     if not records:
         return pd.DataFrame()
     df = pd.DataFrame(records)
-    for col in ("time", "goals", "xG", "xA", "xGChain", "positionOrder", "red_card"):
+    numeric = ("time", "goals", "assists", "own_goals", "xG", "xA", "xGChain",
+               "positionOrder", "yellow_card", "red_card")
+    for col in (c for c in numeric if c in df.columns):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["season_start"] = year
     return df

@@ -18,7 +18,7 @@ from .data import load_fixtures, load_matches
 from .features import build_features, core_feature_columns, feature_columns
 from .model import fit_model
 from .lineups import attach_availability, load_availability
-from .xg import attach_xg, load_upcoming_fixtures, load_xg
+from .xg import attach_xg, load_upcoming_fixtures, load_xg, top_up_from_understat
 
 log = logging.getLogger(__name__)
 
@@ -79,7 +79,9 @@ def predict_fixtures(
 ) -> pd.DataFrame:
     """Return one row per upcoming fixture with H/D/A probabilities."""
     matches = load_matches(refresh=refresh)
-    matches = attach_xg(matches, load_xg(refresh=refresh))
+    xg = load_xg(refresh=refresh)
+    matches = top_up_from_understat(matches, xg)
+    matches = attach_xg(matches, xg)
     fx = upcoming_fixtures(refresh=refresh) if fixtures is None else fixtures.copy()
     if fx.empty:
         return pd.DataFrame(columns=["date", "home_team", "away_team", *RESULTS])
