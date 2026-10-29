@@ -1798,3 +1798,141 @@ def test_projection_mean_points_match_an_analytic_expectation():
     for team in teams:
         assert out.loc[team, "proj_points"] == pytest.approx(expected[team], abs=0.35), team
         assert out.loc[team, "remaining"] == 18
+
+
+# ---------------------------------------------------------------------------
+# projection log and movement chart
+# ---------------------------------------------------------------------------
+def _projection(rows):
+    """rows: (team, proj_points, p_title, p_europe, p_relegation)."""
+    df = pd.DataFrame(
+        rows, columns=["team", "proj_points", "p_title", "p_europe", "p_relegation"]
+    )
+    df["played"] = 8
+    df["points"] = 15
+    return df
+
+
+def test_projection_log_round_trips(tmp_path):
+    from epl.project import append_projection, load_projection_log
+
+    path = tmp_path / "projection_log.csv"
+    proj = _projection([("Arsenal", 78.4, 0.62, 0.97, 0.0),
+                        ("Hull", 31.2, 0.0, 0.01, 0.84)])
+    append_projection(proj, 2026, recorded_at=pd.Timestamp("2026-10-29"), path=path)
+
+    out = load_projection_log(path)
+    assert len(out) == 2
+    assert list(out["team"]) == ["Arsenal", "Hull"]
+    assert list(out["position"]) == [1, 2]
+    assert out["recorded_at"].dtype.kind == "M"
+    assert out.set_index("team").loc["Arsenal", "p_title"] == pytest.approx(0.62)
+    assert int(out.set_index("team").loc["Hull", "season_start"]) == 2026
+
+
+def test_projection_log_revises_the_same_day_and_appends_a_new_one(tmp_path):
+    from epl.project import append_projection, load_projection_log
+
+    path = tmp_path / "projection_log.csv"
+    day = pd.Timestamp("2026-10-29")
+    append_projection(_projection([("Arsenal", 78.0, 0.60, 0.9, 0.0)]), 2026,
+                      recorded_at=day, path=path)
+    # Same day again: revises rather than stacking a second point.
+    append_projection(_projection([("Arsenal", 80.0, 0.70, 0.95, 0.0)]), 2026,
+                      recorded_at=day, path=path)
+    out = load_projection_log(path)
+    assert len(out) == 1
+    assert out["p_title"].iloc[0] == pytest.approx(0.70)
+
+    # A later day is a new point, and the earlier one is left alone.
+    append_projection(_projection([("Arsenal", 82.0, 0.75, 0.97, 0.0)]), 2026,
+                      recorded_at=pd.Timestamp("2026-11-05"), path=path)
+    out = load_projection_log(path)
+    assert len(out) == 2
+    assert list(out.sort_values("recorded_at")["p_title"].round(2)) == [0.70, 0.75]
+
+
+def test_projection_log_ignores_an_empty_projection(tmp_path):
+    from epl.project import append_projection
+
+    path = tmp_path / "projection_log.csv"
+    assert append_projection(pd.DataFrame(), 2026, path=path).empty
+    assert append_projection(None, 2026, path=path).empty
+    assert not path.exists()
+
+
+def _history(days, teams_by_day):
+    rows = []
+    for day, teams in zip(days, teams_by_day, strict=True):
+        for pos, (team, title, releg) in enumerate(teams, start=1):
+            rows.append({
+                "recorded_at": pd.Timestamp(day), "season_start": 2026, "team": team,
+                "position": pos, "played": 8, "points": 15, "proj_points": 70.0,
+                "p_title": title, "p_europe": 0.5, "p_relegation": releg,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_movement_chart_draws_a_line_per_contender():
+    from epl.site import _probability_chart
+
+    hist = _history(
+        ["2026-10-01", "2026-10-15", "2026-11-01"],
+        [[("Man City", 0.50, 0.0), ("Arsenal", 0.45, 0.0), ("Hull", 0.001, 0.6)]] * 3,
+    )
+    out = _probability_chart(hist, "p_title", threshold=0.05, aria="title race")
+
+    assert out.startswith("<svg")
+    # Two contenders drawn, Hull excluded by the threshold.
+    assert out.count('class="ln"') == 2
+    assert "Man City 50%" in out and "Arsenal 45%" in out
+    assert "Hull" not in out
+    assert "01 Oct" in out and "01 Nov" in out
+
+
+def test_movement_chart_reports_the_change_since_the_first_snapshot():
+    from epl.site import _probability_chart
+
+    hist = _history(
+        ["2026-10-01", "2026-11-01"],
+        [[("Man City", 0.30, 0.0)], [("Man City", 0.55, 0.0)]],
+    )
+    out = _probability_chart(hist, "p_title", threshold=0.05, aria="title race")
+    assert "Man City 55%" in out
+    assert "+25 pts" in out
+
+
+def test_movement_chart_needs_more_than_one_snapshot():
+    from epl.site import _probability_chart
+
+    one = _history(["2026-10-01"], [[("Man City", 0.5, 0.0)]])
+    assert _probability_chart(one, "p_title", threshold=0.05, aria="x") == ""
+    assert _probability_chart(pd.DataFrame(), "p_title", threshold=0.05, aria="x") == ""
+
+
+def test_movement_section_explains_itself_before_there_is_a_line_to_draw():
+    from epl.site import _projection_movement
+
+    one = _history(["2026-10-29"], [[("Man City", 0.5, 0.0)]])
+    out = _projection_movement(one)
+    assert "<h2>How the projection has moved</h2>" in out
+    assert "29 October 2026" in out
+    assert "<svg" not in out
+
+    assert _projection_movement(None) == ""
+    assert _projection_movement(pd.DataFrame()) == ""
+
+
+def test_movement_section_charts_both_races_once_there_is_history():
+    from epl.site import _projection_movement
+
+    hist = _history(
+        ["2026-10-01", "2026-11-01"],
+        [[("Man City", 0.50, 0.0), ("Hull", 0.0, 0.40)],
+         [("Man City", 0.62, 0.0), ("Hull", 0.0, 0.55)]],
+    )
+    out = _projection_movement(hist)
+    assert "<h3>Title race</h3>" in out
+    assert "<h3>Relegation fight</h3>" in out
+    assert out.count("<svg") == 2
+    assert "2 snapshots since 01 October 2026" in out

@@ -31,7 +31,7 @@ from .features import (build_features, core_feature_columns, drop_availability,
 from .metrics import calibration_table
 from .model import MODEL_KINDS, feature_importance, fit_model
 from .predict import predict_fixtures
-from .project import simulate_season
+from .project import append_projection, projection_history, simulate_season
 from .lineups import attach_availability, download_season_rosters, load_availability
 from .xg import attach_xg, load_xg, top_up_from_understat
 from .report import write_all
@@ -248,13 +248,19 @@ def cmd_site(args) -> int:
             for t in teams
         ]
 
-    projection = None
+    projection = history = None
     if profiles and not table.empty:
         projection = simulate_season(table, all_fixtures)
+        # Recorded before rendering so the chart includes today's point. The
+        # log is keyed by day, so rebuilding revises today rather than adding
+        # a second point to it.
+        history = projection_history(append_projection(projection, season_start),
+                                     season_start)
 
     dest = build_site(fixtures, preds, logged=logged, profiles=profiles,
-                      projection=projection, season_label=season_label,
-                      out_dir=out, repo_url=args.repo_url)
+                      projection=projection, projection_history=history,
+                      season_label=season_label, out_dir=out,
+                      repo_url=args.repo_url)
     n_clubs = len(profiles) if profiles else 0
     print(f"{len(fixtures)} fixtures, {n_clubs} club pages; wrote {dest}")
     return 0

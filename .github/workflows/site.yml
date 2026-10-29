@@ -83,6 +83,22 @@ jobs:
       - name: Build site
         run: python -m epl.cli site --repo-url "https://github.com/${{ github.repository }}"
 
+      # After the build, because the projection is produced while the site is
+      # rendered. Kept separate from the prediction-log commit above so a
+      # failing build cannot cost us that record.
+      - name: Commit the projection log
+        run: |
+          if git diff --quiet -- predictions/projection_log.csv; then
+            echo "no change to the projection log"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add predictions/projection_log.csv
+          git commit -m "Update projection log [skip ci]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

@@ -18,8 +18,12 @@ Two simplifications matter enough that the page states them:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+
+from .config import ROOT
 
 # Monte Carlo draws. Ten thousand puts the standard error on a 50% finishing
 # probability at about half a point, which is well inside how precisely any
@@ -124,3 +128,96 @@ def simulate_season(
         out.sort_values(["proj_points", "goal_difference"], ascending=False)
         .reset_index(drop=True)[COLUMNS]
     )
+
+
+# ---------------------------------------------------------------------------
+# the record of what the projection said, week by week
+# ---------------------------------------------------------------------------
+# A projection is only interesting next to the one before it. Kept in the repo
+# beside the prediction log for the same reason: the record has to outlive the
+# runner that produced it, or there is nothing to compare against.
+PROJECTION_LOG = ROOT / "predictions" / "projection_log.csv"
+
+LOG_KEY = ["recorded_at", "season_start", "team"]
+LOG_COLUMNS = [
+    *LOG_KEY, "position", "played", "points", "proj_points",
+    "p_title", "p_europe", "p_relegation",
+]
+
+
+def empty_projection_log() -> pd.DataFrame:
+    return pd.DataFrame({c: pd.Series(dtype="object") for c in LOG_COLUMNS})
+
+
+def load_projection_log(path: Path | None = None) -> pd.DataFrame:
+    path = Path(path) if path else PROJECTION_LOG
+    if not path.exists():
+        return empty_projection_log()
+    df = pd.read_csv(path)
+    for c in LOG_COLUMNS:
+        if c not in df.columns:
+            df[c] = pd.NA
+    df["recorded_at"] = pd.to_datetime(df["recorded_at"], errors="coerce")
+    df["season_start"] = pd.to_numeric(df["season_start"], errors="coerce").astype("Int64")
+    for c in ("position", "played", "points"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    for c in ("proj_points", "p_title", "p_europe", "p_relegation"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df[LOG_COLUMNS].dropna(subset=["recorded_at", "team"])
+
+
+def save_projection_log(df: pd.DataFrame, path: Path | None = None) -> Path:
+    path = Path(path) if path else PROJECTION_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = df[LOG_COLUMNS].sort_values(["recorded_at", "position"], kind="stable").copy()
+    out["recorded_at"] = pd.to_datetime(out["recorded_at"]).dt.strftime("%Y-%m-%d")
+    out.to_csv(path, index=False)
+    return path
+
+
+def append_projection(
+    projection: pd.DataFrame,
+    season_start: int,
+    *,
+    recorded_at: pd.Timestamp | None = None,
+    path: Path | None = None,
+) -> pd.DataFrame:
+    """Record today's projection, one row per club.
+
+    Snapshots are keyed by calendar day, so rebuilding twice in one day
+    revises that day rather than stacking two points on the chart. Earlier
+    days are never touched: the point of the log is that it is a record.
+    """
+    if projection is None or projection.empty:
+        return load_projection_log(path)
+
+    day = pd.Timestamp(recorded_at or pd.Timestamp.now()).normalize()
+    fresh = pd.DataFrame({
+        "recorded_at": day,
+        "season_start": int(season_start),
+        "team": projection["team"].to_numpy(),
+        "position": np.arange(1, len(projection) + 1),
+        "played": projection["played"].to_numpy(),
+        "points": projection["points"].to_numpy(),
+        "proj_points": projection["proj_points"].round(2).to_numpy(),
+        "p_title": projection["p_title"].round(4).to_numpy(),
+        "p_europe": projection["p_europe"].round(4).to_numpy(),
+        "p_relegation": projection["p_relegation"].round(4).to_numpy(),
+    })
+
+    combined = pd.concat([load_projection_log(path), fresh], ignore_index=True)
+    combined["recorded_at"] = pd.to_datetime(combined["recorded_at"])
+    # keep="last" so a rebuild revises today rather than being ignored.
+    combined = combined.drop_duplicates(LOG_KEY, keep="last")
+    save_projection_log(combined, path)
+    return combined
+
+
+def projection_history(log: pd.DataFrame, season_start: int | None = None) -> pd.DataFrame:
+    """One row per snapshot per club, oldest first, for one season."""
+    if log.empty:
+        return log
+    out = log
+    if season_start is not None:
+        out = out[out["season_start"] == season_start]
+    return out.sort_values(["recorded_at", "position"], kind="stable").reset_index(drop=True)

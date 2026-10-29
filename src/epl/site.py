@@ -135,6 +135,16 @@ figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
 .k-eu{background:var(--away)} .k-rel{background:#c2504a}
 .ltab .rng{color:var(--muted); font-size:.82rem; white-space:nowrap}
 .ltab .dim{color:var(--muted)}
+.chart{width:100%; height:auto; color:var(--muted); display:block; margin:4px 0 2px}
+.chart .grid{stroke:var(--line); stroke-width:1}
+.chart .axis{fill:currentColor; font-size:11px}
+.chart .ln{fill:none; stroke-width:2.2; stroke-linejoin:round; stroke-linecap:round}
+.chart .dot{stroke:var(--bg); stroke-width:1.5}
+.legend{display:flex; gap:8px 18px; flex-wrap:wrap; font-size:.82rem; margin:2px 0 14px}
+.legend i{display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px}
+.legend span{white-space:nowrap}
+.legend b{font-weight:600}
+.legend .mv{color:var(--muted); font-weight:400}
 @media (max-width:620px){
   .ltab .opt{display:none}
   .ltab th,.ltab td{padding:9px 4px}
@@ -745,6 +755,127 @@ def _projected_table(projection: pd.DataFrame | None, linked: set[str] | None) -
     )
 
 
+# Enough distinct hues for a title race or a relegation fight; beyond six
+# lines a chart like this stops being readable anyway.
+SERIES_COLOURS = ["#2f6fdb", "#e07b39", "#49a078", "#8a6fbf", "#c2504a", "#3aa0b8"]
+
+
+def _probability_chart(
+    history: pd.DataFrame, column: str, *, threshold: float, aria: str
+) -> str:
+    """One line per club whose chance ever cleared `threshold`, as inline SVG.
+
+    Inline rather than a PNG so it inherits the page's colours in both light
+    and dark mode, and so there is no image file to copy or commit.
+    """
+    if history.empty:
+        return ""
+    wide = history.pivot_table(
+        index="recorded_at", columns="team", values=column, aggfunc="last"
+    ).sort_index()
+    if len(wide) < 2:
+        return ""
+    peak = wide.max()
+    picks = [t for t in peak.index if peak[t] >= threshold]
+    if not picks:
+        return ""
+    picks = sorted(picks, key=lambda t: (wide[t].iloc[-1], peak[t]), reverse=True)[:6]
+
+    dates = list(wide.index)
+    first, last = dates[0].value, dates[-1].value
+    span = (last - first) or 1
+    x0, x1, y_top, y_base = 46, 702, 16, 196
+
+    def sx(ts):
+        return x0 + (ts.value - first) / span * (x1 - x0)
+
+    def sy(p):
+        return y_base - p * (y_base - y_top)
+
+    parts = []
+    for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = sy(frac)
+        parts.append(f'<line class="grid" x1="{x0}" y1="{y:.1f}" x2="{x1}" y2="{y:.1f}"/>')
+        parts.append(
+            f'<text class="axis" x="{x0 - 8}" y="{y + 4:.1f}" text-anchor="end">'
+            f'{round(frac * 100)}%</text>'
+        )
+
+    ticks = [dates[0], dates[-1]] if len(dates) < 4 else [dates[0], dates[len(dates) // 2], dates[-1]]
+    for i, ts in enumerate(ticks):
+        anchor = "start" if i == 0 else ("end" if i == len(ticks) - 1 else "middle")
+        parts.append(
+            f'<text class="axis" x="{sx(ts):.1f}" y="{y_base + 20}" '
+            f'text-anchor="{anchor}">{ts.strftime("%d %b")}</text>'
+        )
+
+    legend = []
+    for i, team in enumerate(picks):
+        colour = SERIES_COLOURS[i % len(SERIES_COLOURS)]
+        series = wide[team].dropna()
+        pts = " ".join(f"{sx(ts):.1f},{sy(v):.1f}" for ts, v in series.items())
+        parts.append(f'<polyline class="ln" stroke="{colour}" points="{pts}"/>')
+        end_ts, end_v = series.index[-1], series.iloc[-1]
+        parts.append(
+            f'<circle class="dot" cx="{sx(end_ts):.1f}" cy="{sy(end_v):.1f}" '
+            f'r="3.5" fill="{colour}"/>'
+        )
+        move = end_v - series.iloc[0]
+        shift = "no change" if abs(move) < 0.005 else f"{move * 100:+.0f} pts"
+        legend.append(
+            f'<span><i style="background:{colour}"></i>'
+            f'<b>{html.escape(str(team))} {round(end_v * 100)}%</b> '
+            f'<span class="mv">({shift})</span></span>'
+        )
+
+    body = "".join(parts)
+    return (
+        f'<svg class="chart" viewBox="0 0 720 224" role="img" '
+        f'aria-label="{html.escape(aria)}">{body}</svg>'
+        f'<p class="legend">{"".join(legend)}</p>'
+    )
+
+
+def _projection_movement(history: pd.DataFrame | None) -> str:
+    """How the projection has changed since the record began."""
+    if history is None or history.empty:
+        return ""
+    snapshots = history["recorded_at"].nunique()
+    started = pd.Timestamp(history["recorded_at"].min()).strftime("%d %B %Y")
+
+    if snapshots < 2:
+        note = (f"The first snapshot was taken on {started}. The projection is "
+                "recorded on every rebuild, so this fills in as the season goes.")
+        return ('  <section>\n    <h2>How the projection has moved</h2>\n'
+                f'    <p class="muted">{note}</p>\n  </section>\n\n')
+
+    title = _probability_chart(
+        history, "p_title", threshold=0.05,
+        aria="Title chance over time for the clubs in contention",
+    )
+    releg = _probability_chart(
+        history, "p_relegation", threshold=0.15,
+        aria="Relegation chance over time for the clubs at risk",
+    )
+    if not title and not releg:
+        return ""
+
+    blocks = []
+    if title:
+        blocks.append(f"    <h3>Title race</h3>\n    {title}")
+    if releg:
+        blocks.append(f"    <h3>Relegation fight</h3>\n    {releg}")
+    note = (f"{snapshots} snapshots since {started}. Each point is what the model "
+            "believed that day, kept in the repository rather than recomputed, so "
+            "the line cannot be quietly revised after the fact. Clubs appear once "
+            "they have been in contention at some point in the season.")
+    return (
+        '  <section>\n    <h2>How the projection has moved</h2>\n'
+        + "\n".join(blocks)
+        + f'\n    <p><small class="muted">{note}</small></p>\n  </section>\n\n'
+    )
+
+
 def build(
     fixtures: pd.DataFrame,
     preds: pd.DataFrame | None = None,
@@ -752,6 +883,7 @@ def build(
     logged: pd.DataFrame | None = None,
     profiles: list[dict] | None = None,
     projection: pd.DataFrame | None = None,
+    projection_history: pd.DataFrame | None = None,
     season_label: str = "",
     out_dir: Path | None = None,
     repo_url: str | None = None,
@@ -775,6 +907,7 @@ def build(
     results = _results_section(logged, linked=linked) if logged is not None else ""
     clubs = _league_table(profiles) if profiles else ""
     projected = _projected_table(projection, linked)
+    movement = _projection_movement(projection_history)
 
     figures = []
     for name, title, caption in CHARTS:
@@ -823,7 +956,7 @@ def build(
     form, Elo ratings and expected goals. They never see bookmaker prices.</small></p>
   </section>
 
-{clubs}{projected}{results}  <section>
+{clubs}{projected}{movement}{results}  <section>
     <h2>How it actually performs</h2>
     <div class="note">
       <strong>This model does not beat the bookmakers.</strong>
