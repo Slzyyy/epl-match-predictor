@@ -1213,7 +1213,11 @@ def test_trophies_file_is_valid_and_covers_the_league():
     assert set(titles) <= set(clubs), "a club has a Wikipedia title but no honours entry"
     for club, comps in clubs.items():
         for comp, years in comps.items():
+            if comp.startswith("_"):
+                continue  # per-club metadata (_source, _note), not a competition
             assert isinstance(years, list), f"{club}/{comp}"
+            assert years == sorted(years), f"{club}/{comp} not in year order"
+            assert len(years) == len(set(years)), f"{club}/{comp} has a duplicate year"
             for y in years:
                 assert isinstance(y, int) and 1870 <= y <= 2030, f"{club}/{comp}: {y}"
 
@@ -1334,3 +1338,221 @@ def test_player_stats_returns_typed_columns_when_no_rosters(monkeypatch):
     for col in ("goals", "assists", "xg", "xa"):
         assert pd.api.types.is_numeric_dtype(out[col]), col
     assert C.top_scorers(out, "Arsenal").empty
+
+
+# ---------------------------------------------------------------------------
+# all-time records and multi-season careers
+# ---------------------------------------------------------------------------
+def test_all_time_scorers_file_is_valid_and_matches_the_trophies_file():
+    """The curated record-scorer file must stay parseable and consistent."""
+    from epl.clubs import load_all_time_scorers, load_trophies
+
+    scorers = load_all_time_scorers()
+    clubs = {k: v for k, v in scorers.items() if not k.startswith("_")}
+    honours = {k for k in load_trophies() if not k.startswith("_")}
+    assert len(clubs) >= 20
+    # Same spelling of every club name, or a page silently loses its table.
+    assert set(clubs) == honours
+
+    for club, entry in clubs.items():
+        players = entry["players"]
+        assert players, club
+        goals = [p["goals"] for p in players]
+        assert goals == sorted(goals, reverse=True), f"{club} not ranked by goals"
+        names = [p["player"] for p in players]
+        assert len(names) == len(set(names)), f"{club} lists a player twice"
+        for p in players:
+            assert isinstance(p["goals"], int) and 1 <= p["goals"] <= 500, f"{club}: {p}"
+            assert p["player"].strip(), club
+            assert isinstance(p.get("years", ""), str), f"{club}: {p}"
+
+
+def _roster_rows(season, rows):
+    """Minimal roster frame of the shape load_season_rosters returns."""
+    df = pd.DataFrame(rows)
+    df["season_start"] = season
+    return df
+
+
+def _index_rows(season, rows):
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    df["season_start"] = season
+    return df
+
+
+def _stub_two_seasons(monkeypatch):
+    """Two seasons of rosters: Kane at Spurs both years, Son moving to Arsenal."""
+    import epl.clubs as C
+
+    rosters = {
+        2014: _roster_rows(2014, [
+            {"understat_id": 1, "player": "Kane", "position": "FW", "time": 90,
+             "goals": 2, "assists": 1, "xG": 1.5, "xA": 0.5, "is_home": True},
+            {"understat_id": 1, "player": "Son", "position": "FW", "time": 90,
+             "goals": 1, "assists": 0, "xG": 0.8, "xA": 0.2, "is_home": True},
+            {"understat_id": 1, "player": "Lloris", "position": "GK", "time": 90,
+             "goals": 0, "assists": 0, "xG": 0.0, "xA": 0.0, "is_home": True},
+        ]),
+        2015: _roster_rows(2015, [
+            {"understat_id": 2, "player": "Kane", "position": "FW", "time": 80,
+             "goals": 3, "assists": 2, "xG": 2.5, "xA": 1.0, "is_home": True},
+            {"understat_id": 2, "player": "Lloris", "position": "GK", "time": 90,
+             "goals": 0, "assists": 0, "xG": 0.0, "xA": 0.0, "is_home": True},
+            # Same player, different club: must not be merged into one row.
+            {"understat_id": 2, "player": "Son", "position": "FW", "time": 90,
+             "goals": 4, "assists": 1, "xG": 3.0, "xA": 0.4, "is_home": False},
+        ]),
+    }
+    index = {
+        2014: _index_rows(2014, [{"understat_id": 1, "date": "2014-08-16",
+                                  "home_team": "Tottenham", "away_team": "Arsenal"}]),
+        2015: _index_rows(2015, [{"understat_id": 2, "date": "2015-08-15",
+                                  "home_team": "Tottenham", "away_team": "Arsenal"}]),
+    }
+    monkeypatch.setattr(C, "load_season_rosters",
+                        lambda y: rosters.get(y, pd.DataFrame()))
+    monkeypatch.setattr(C, "season_match_index",
+                        lambda y: index.get(y, pd.DataFrame()))
+    return C
+
+
+def test_career_stats_sums_a_player_across_seasons(monkeypatch):
+    C = _stub_two_seasons(monkeypatch)
+    career = C.career_stats(2014, 2015)
+
+    kane = career[(career["team"] == "Tottenham") & (career["player"] == "Kane")]
+    assert len(kane) == 1
+    assert int(kane["goals"].iloc[0]) == 5          # 2 + 3
+    assert int(kane["assists"].iloc[0]) == 3        # 1 + 2
+    assert int(kane["minutes"].iloc[0]) == 170      # 90 + 80
+    assert int(kane["apps"].iloc[0]) == 2
+    assert int(kane["seasons"].iloc[0]) == 2
+
+
+def test_career_stats_credits_a_transfer_to_each_club_separately(monkeypatch):
+    C = _stub_two_seasons(monkeypatch)
+    career = C.career_stats(2014, 2015)
+
+    son = career[career["player"] == "Son"].set_index("team")
+    assert set(son.index) == {"Tottenham", "Arsenal"}
+    assert int(son.loc["Tottenham", "goals"]) == 1
+    assert int(son.loc["Arsenal", "goals"]) == 4
+    assert int(son.loc["Arsenal", "seasons"]) == 1
+
+    # And the per-club top scorers reflect the split, not a combined total.
+    top = C.top_scorers(career, "Tottenham")
+    assert list(top["player"]) == ["Kane", "Son"]
+    assert "seasons" in top.columns
+
+
+def test_career_keepers_counts_clean_sheets_across_seasons(monkeypatch):
+    C = _stub_two_seasons(monkeypatch)
+    matches = pd.DataFrame({
+        "date": pd.to_datetime(["2014-08-16", "2015-08-15"]),
+        "home_team": ["Tottenham", "Tottenham"],
+        "away_team": ["Arsenal", "Arsenal"],
+        "home_goals": [2, 3],
+        "away_goals": [0, 1],
+        "result": ["H", "H"],
+    })
+    keepers = C.career_keepers(matches, 2014, 2015)
+    lloris = C.team_keepers(keepers, "Tottenham")
+    assert list(lloris["player"]) == ["Lloris"]
+    assert int(lloris["starts"].iloc[0]) == 2
+    # Spurs kept one clean sheet of the two; the second conceded one.
+    assert int(lloris["clean_sheets"].iloc[0]) == 1
+    assert int(lloris["seasons"].iloc[0]) == 2
+    # A club with no goalkeeper rows gets an empty frame, not a KeyError.
+    assert C.team_keepers(keepers, "Everton").empty
+
+
+def test_career_stats_is_typed_when_no_rosters_exist(monkeypatch):
+    import epl.clubs as C
+
+    monkeypatch.setattr(C, "load_season_rosters", lambda y: pd.DataFrame())
+    career = C.career_stats(2014, 2015)
+    assert career.empty
+    for col in ("goals", "assists", "xg", "xa"):
+        assert pd.api.types.is_numeric_dtype(career[col]), col
+    assert C.top_scorers(career, "Arsenal").empty
+    assert C.career_keepers(pd.DataFrame({"result": []}), 2014, 2015).empty
+
+
+def test_all_time_renderer_lists_players_and_states_the_basis():
+    from epl.site import _all_time
+
+    out = _all_time(
+        {"_basis": "league goals only",
+         "_note": "Hull's article has no all-competitions table.",
+         "players": [{"player": "Chris Chilton", "goals": 193, "years": ""},
+                     {"player": "Ken Wagstaff", "goals": 173, "years": "1964-1976"}]},
+        "https://en.wikipedia.org/wiki/Hull_City_A.F.C.",
+    )
+    assert "Chris Chilton" in out and "193" in out
+    assert "1964-1976" in out
+    assert "league goals only" in out
+    assert "no all-competitions table" in out
+    # Ranked 1..n in the order given.
+    assert out.index("Chris Chilton") < out.index("Ken Wagstaff")
+
+
+def test_all_time_renderer_falls_back_to_the_wikipedia_link():
+    from epl.site import _all_time
+
+    out = _all_time({}, "https://en.wikipedia.org/wiki/Example")
+    assert "No all-time scoring record" in out
+    assert "en.wikipedia.org/wiki/Example" in out
+
+
+def test_honours_renders_the_per_club_note():
+    from epl.site import _honours
+
+    note = "The 2025 FA Cup was the club's first major trophy."
+    with_cup = _honours({"FA Cup": [2025], "_note": note}, "")
+    assert "FA Cup &times;1" in with_cup
+    assert "first major trophy" in with_cup
+
+    # A club with a note but nothing to list shows the note, not the fallback.
+    bare = _honours({"_note": note}, "")
+    assert "first major trophy" in bare
+    assert "No major senior honours" not in bare
+
+
+def test_club_page_renders_the_career_and_all_time_sections(tmp_path):
+    from epl.site import build_club_pages
+
+    players = pd.DataFrame({"player": ["Saka"], "apps": [8], "minutes": [700],
+                            "goals": [5.0], "xg": [4.2], "assists": [3.0], "xa": [2.1]})
+    career = players.assign(seasons=[7])
+    profile = {
+        "team": "Arsenal", "slug": "arsenal", "position": 1,
+        "season": {"played": 8, "won": 7, "drawn": 0, "lost": 1, "goals_for": 10,
+                   "goals_against": 5, "goal_difference": 5, "clean_sheets": 5,
+                   "failed_to_score": 1, "points": 21},
+        "form": pd.DataFrame({
+            "date": [pd.Timestamp("2026-10-24")], "opponent": ["Everton"],
+            "is_home": [True], "gf": [2], "ga": [0], "outcome": ["W"],
+        }),
+        "scorers": players, "assists": players,
+        "keepers": pd.DataFrame({"player": ["Raya"], "starts": [8], "clean_sheets": [5]}),
+        "career_scorers": career, "career_assists": career,
+        "career_keepers": pd.DataFrame({"player": ["Raya"], "starts": [90],
+                                        "clean_sheets": [30], "seasons": [3]}),
+        "career_label": "2014-15 to 2026-27",
+        "all_time": {"_basis": "all competitions",
+                     "players": [{"player": "Thierry Henry", "goals": 228,
+                                  "years": "1999-2007, 2012"}]},
+        "trophies": {"League Champions": [2026]},
+        "wiki": {"extract": "Arsenal are a football club.",
+                 "url": "https://en.wikipedia.org/wiki/Arsenal_F.C."},
+    }
+    (page,) = build_club_pages([profile], "2026/27", tmp_path)
+    text = page.read_text(encoding="utf-8")
+
+    for heading in ("This season", "Premier League record, 2014-15 to 2026-27",
+                    "All-time club record scorers", "Honours", "Recent form"):
+        assert heading in text, heading
+    assert "Thierry Henry" in text and "228" in text
+    assert "Seasons" in text          # the career tables carry the extra column
+    assert "League Champions &times;1" in text

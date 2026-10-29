@@ -1,105 +1,222 @@
 {
-  "_README": "Hand-compiled major honours. No free structured feed carries club honours (Wikidata models a football club's 'award received' as media awards, not league titles), so unlike every other number on this site these are not computed from data. Treat them as indicative, not authoritative: each club page links to its Wikipedia article for the definitive list. Corrections are a plain edit to this file, no code change needed. Covers major senior men's honours only, to 2026.",
+  "_README": [
+    "Senior men's honours per club. Years are the year the trophy was WON, so the",
+    "1980-81 league title appears as 1981 and the 2025-26 title as 2026.",
+    "Rebuilt 2026-10-29 from each club's OWN official website where one publishes an",
+    "honours page: arsenal.com, mancity.com, manutd.com, liverpoolfc.com,",
+    "chelseafc.com, tottenhamhotspur.com, evertonfc.com, nottinghamforest.co.uk,",
+    "leedsunited.com, safc.com. Newcastle, Aston Villa, Ipswich, Coventry, Crystal",
+    "Palace, Fulham, Brighton, Brentford, Bournemouth and Hull do not publish a",
+    "complete honours table, so those were cross-checked across several sources and",
+    "are marked _source: 'cross-checked'.",
+    "Second-tier league titles are included because the official pages list them.",
+    "Third tier and below is included only where a club has little else.",
+    "Keys beginning with _ are metadata, not competitions.",
+    "This file is plain JSON on purpose: correct it without touching any code."
+  ],
+  "_as_of": "2026-10-29",
+
   "Arsenal": {
-    "League title": [1931, 1933, 1934, 1935, 1938, 1948, 1953, 1971, 1989, 1991, 1998, 2002, 2004],
+    "_source": "arsenal.com/men/honours",
+    "League Champions": [1931, 1933, 1934, 1935, 1938, 1948, 1953, 1971, 1989, 1991, 1998, 2002, 2004, 2026],
     "FA Cup": [1930, 1936, 1950, 1971, 1979, 1993, 1998, 2002, 2003, 2005, 2014, 2015, 2017, 2020],
     "League Cup": [1987, 1993],
-    "European Cup Winners' Cup": [1994]
+    "European Cup Winners' Cup": [1994],
+    "Inter-Cities Fairs Cup": [1970],
+    "FA Charity/Community Shield": [1930, 1931, 1933, 1934, 1938, 1948, 1953, 1991, 1998, 1999, 2002, 2004, 2014, 2015, 2017, 2020, 2023, 2026]
   },
+
   "Aston Villa": {
-    "League title": [1894, 1896, 1897, 1899, 1900, 1910, 1981],
+    "_source": "cross-checked",
+    "League Champions": [1894, 1896, 1897, 1899, 1900, 1910, 1981],
     "FA Cup": [1887, 1895, 1897, 1905, 1913, 1920, 1957],
     "League Cup": [1961, 1975, 1977, 1994, 1996],
     "European Cup": [1982],
-    "European Super Cup": [1982]
+    "UEFA Europa League": [2026],
+    "UEFA Super Cup": [1982],
+    "UEFA Intertoto Cup": [2001],
+    "Second Division": [1938, 1960],
+    "Third Division": [1972]
   },
-  "Bournemouth": { "League title": [], "FA Cup": [], "League Cup": [] },
-  "Brentford": { "League title": [], "FA Cup": [], "League Cup": [] },
-  "Brighton": { "League title": [], "FA Cup": [], "League Cup": [] },
+
+  "Bournemouth": {
+    "_source": "cross-checked",
+    "_note": "No major senior honour. Reached the top flight for the first time in 2015.",
+    "Championship (second tier)": [2015],
+    "Third Division": [1987],
+    "Associate Members' Cup": [1984]
+  },
+
+  "Brentford": {
+    "_source": "cross-checked",
+    "_note": "No major senior honour. Highest top-flight finish was fifth, in 1936.",
+    "Second Division": [1935],
+    "Third Division South": [1933],
+    "Third Division": [1992],
+    "Fourth Division": [1963]
+  },
+
+  "Brighton": {
+    "_source": "cross-checked",
+    "_note": "No major senior honour since the Charity Shield era. Lost the 1983 FA Cup final after a replay.",
+    "FA Charity Shield": [1910],
+    "Third Division South": [1958]
+  },
+
   "Chelsea": {
-    "League title": [1955, 2005, 2006, 2010, 2015, 2017],
+    "_source": "chelseafc.com/en/mens-trophy-cabinet",
+    "First Division/Premier League": [1955, 2005, 2006, 2010, 2015, 2017],
     "FA Cup": [1970, 1997, 2000, 2007, 2009, 2010, 2012, 2018],
     "League Cup": [1965, 1998, 2005, 2007, 2015],
-    "European Cup / Champions League": [2012, 2021],
-    "European Cup Winners' Cup": [1971, 1998],
+    "UEFA Champions League": [2012, 2021],
     "UEFA Europa League": [2013, 2019],
-    "European Super Cup": [1998, 2021],
-    "FIFA Club World Cup": [2021]
+    "UEFA Cup Winners' Cup": [1971, 1998],
+    "UEFA Conference League": [2025],
+    "UEFA Super Cup": [1998, 2021],
+    "FIFA Club World Cup": [2025],
+    "FIFA Intercontinental Cup": [2021],
+    "FA Charity/Community Shield": [1955, 2000, 2005, 2009],
+    "Full Members' Cup": [1986, 1990]
   },
-  "Coventry": { "League title": [], "FA Cup": [1987], "League Cup": [] },
-  "Crystal Palace": { "League title": [], "FA Cup": [2025], "League Cup": [] },
+
+  "Coventry": {
+    "_source": "cross-checked",
+    "_note": "The 1987 FA Cup is the club's only major honour. They won the FA Youth Cup the same season.",
+    "FA Cup": [1987],
+    "EFL Trophy": [2017]
+  },
+
+  "Crystal Palace": {
+    "_source": "cross-checked",
+    "_note": "The 2025 FA Cup was the club's first major trophy, beating Manchester City 1-0 at Wembley.",
+    "FA Cup": [2025]
+  },
+
   "Everton": {
-    "League title": [1891, 1915, 1928, 1932, 1939, 1963, 1970, 1985, 1987],
+    "_source": "evertonfc.com/club/history/honours/honours-and-records",
+    "_note": "Everton have reached two League Cup finals but never won it.",
+    "First Division": [1891, 1915, 1928, 1932, 1939, 1963, 1970, 1985, 1987],
     "FA Cup": [1906, 1933, 1966, 1984, 1995],
-    "League Cup": [],
-    "European Cup Winners' Cup": [1985]
+    "European Cup Winners' Cup": [1985],
+    "FA Charity Shield": [1928, 1932, 1963, 1970, 1984, 1985, 1986, 1987, 1995],
+    "Second Division": [1931]
   },
-  "Fulham": { "League title": [], "FA Cup": [], "League Cup": [] },
-  "Hull": { "League title": [], "FA Cup": [], "League Cup": [] },
+
+  "Fulham": {
+    "_source": "cross-checked",
+    "_note": "No major domestic honour. Lost the 1975 FA Cup final and the 2010 Europa League final.",
+    "UEFA Intertoto Cup": [2002],
+    "Second Division/Championship": [1949, 2001, 2022]
+  },
+
+  "Hull": {
+    "_source": "cross-checked",
+    "_note": "No major senior honour. Lost the 2014 FA Cup final.",
+    "Third Division North": [1933, 1949],
+    "Third Division": [1966],
+    "League One": [2021]
+  },
+
   "Ipswich": {
-    "League title": [1962],
+    "_source": "cross-checked",
+    "First Division": [1962],
     "FA Cup": [1978],
-    "League Cup": [],
     "UEFA Cup": [1981]
   },
+
   "Leeds": {
-    "League title": [1969, 1974, 1992],
+    "_source": "leedsunited.com/en/club-honours",
+    "First Division": [1969, 1974, 1992],
     "FA Cup": [1972],
     "League Cup": [1968],
-    "Inter-Cities Fairs Cup": [1968, 1971]
+    "Inter-Cities Fairs Cup": [1968, 1971],
+    "FA Charity Shield": [1969, 1992],
+    "Second Division/Championship": [1924, 1964, 1990, 2020, 2025]
   },
+
   "Liverpool": {
-    "League title": [1901, 1906, 1922, 1923, 1947, 1964, 1966, 1973, 1976, 1977, 1979, 1980, 1982, 1983, 1984, 1986, 1988, 1990, 2020, 2025],
+    "_source": "liverpoolfc.com/history/honours",
+    "League Titles": [1901, 1906, 1922, 1923, 1947, 1964, 1966, 1973, 1976, 1977, 1979, 1980, 1982, 1983, 1984, 1986, 1988, 1990, 2020, 2025],
+    "European Cup": [1977, 1978, 1981, 1984, 2005, 2019],
     "FA Cup": [1965, 1974, 1986, 1989, 1992, 2001, 2006, 2022],
     "League Cup": [1981, 1982, 1983, 1984, 1995, 2001, 2003, 2012, 2022, 2024],
-    "European Cup / Champions League": [1977, 1978, 1981, 1984, 2005, 2019],
     "UEFA Cup": [1973, 1976, 2001],
-    "European Super Cup": [1977, 2001, 2005, 2019],
-    "FIFA Club World Cup": [2019]
+    "UEFA Super Cup": [1977, 2001, 2005, 2019],
+    "FIFA Club World Cup": [2019],
+    "FA Charity/Community Shield": [1964, 1965, 1966, 1974, 1976, 1977, 1979, 1980, 1982, 1986, 1988, 1989, 1990, 2001, 2006, 2022],
+    "Second Division": [1894, 1896, 1905, 1962]
   },
+
   "Man City": {
-    "League title": [1937, 1968, 2012, 2014, 2018, 2019, 2021, 2022, 2023, 2024],
-    "FA Cup": [1904, 1934, 1956, 1969, 2011, 2019, 2023],
-    "League Cup": [1970, 1976, 2014, 2016, 2018, 2019, 2020, 2021],
-    "European Cup / Champions League": [2023],
+    "_source": "mancity.com/club/honours/team",
+    "League Champions": [1937, 1968, 2012, 2014, 2018, 2019, 2021, 2022, 2023, 2024],
+    "FA Cup": [1904, 1934, 1956, 1969, 2011, 2019, 2023, 2026],
+    "League Cup": [1970, 1976, 2014, 2016, 2018, 2019, 2020, 2021, 2026],
+    "UEFA Champions League": [2023],
     "European Cup Winners' Cup": [1970],
-    "European Super Cup": [2023],
-    "FIFA Club World Cup": [2023]
+    "UEFA Super Cup": [2023],
+    "FIFA Club World Cup": [2023],
+    "FA Charity/Community Shield": [1937, 1968, 1972, 2012, 2018, 2019, 2024],
+    "Second Division/Championship": [1899, 1903, 1910, 1928, 1947, 1966, 2002]
   },
+
   "Man United": {
-    "League title": [1908, 1911, 1952, 1956, 1957, 1965, 1967, 1993, 1994, 1996, 1997, 1999, 2000, 2001, 2003, 2007, 2008, 2009, 2011, 2013],
+    "_source": "manutd.com/en/club/history/trophy-room",
+    "League Titles": [1908, 1911, 1952, 1956, 1957, 1965, 1967, 1993, 1994, 1996, 1997, 1999, 2000, 2001, 2003, 2007, 2008, 2009, 2011, 2013],
+    "UEFA Champions League": [1968, 1999, 2008],
     "FA Cup": [1909, 1948, 1963, 1977, 1983, 1985, 1990, 1994, 1996, 1999, 2004, 2016, 2024],
     "League Cup": [1992, 2006, 2009, 2010, 2017, 2023],
-    "European Cup / Champions League": [1968, 1999, 2008],
-    "European Cup Winners' Cup": [1991],
     "UEFA Europa League": [2017],
-    "European Super Cup": [1991],
+    "UEFA Cup Winners' Cup": [1991],
+    "UEFA Super Cup": [1991],
+    "FIFA Club World Cup": [2008],
     "Intercontinental Cup": [1999],
-    "FIFA Club World Cup": [2008]
+    "FA Charity/Community Shield": [1908, 1911, 1952, 1956, 1957, 1965, 1967, 1977, 1983, 1990, 1993, 1994, 1996, 1997, 2003, 2007, 2008, 2010, 2011, 2013, 2016],
+    "Second Division": [1936, 1975]
   },
+
   "Newcastle": {
-    "League title": [1905, 1907, 1909, 1927],
+    "_source": "cross-checked",
+    "First Division": [1905, 1907, 1909, 1927],
     "FA Cup": [1910, 1924, 1932, 1951, 1952, 1955],
     "League Cup": [2025],
-    "Inter-Cities Fairs Cup": [1969]
+    "Inter-Cities Fairs Cup": [1969],
+    "FA Charity Shield": [1909],
+    "Second Division/Championship": [1965, 1993, 2010, 2017]
   },
+
   "Nott'm Forest": {
-    "League title": [1978],
+    "_source": "nottinghamforest.co.uk/club-information/history/honours",
+    "First Division": [1978],
     "FA Cup": [1898, 1959],
     "League Cup": [1978, 1979, 1989, 1990],
     "European Cup": [1979, 1980],
-    "European Super Cup": [1979]
+    "UEFA Super Cup": [1979],
+    "FA Charity Shield": [1978],
+    "Full Members' Cup": [1989, 1992],
+    "Anglo-Scottish Cup": [1977],
+    "Second Division": [1907, 1922, 1998],
+    "Third Division": [1951]
   },
+
   "Sunderland": {
-    "League title": [1892, 1893, 1895, 1902, 1913, 1936],
+    "_source": "safc.com/club-information/history/honours",
+    "League Titles": [1892, 1893, 1895, 1902, 1913, 1936],
     "FA Cup": [1937, 1973],
-    "League Cup": []
+    "FA Charity Shield": [1936],
+    "EFL Trophy": [2021],
+    "Second Division/Championship": [1976, 1996, 1999, 2005, 2007],
+    "Third Division": [1988]
   },
+
   "Tottenham": {
-    "League title": [1951, 1961],
+    "_source": "tottenhamhotspur.com/the-club/history/club-honours",
+    "League Titles": [1951, 1961],
     "FA Cup": [1901, 1921, 1961, 1962, 1967, 1981, 1982, 1991],
     "League Cup": [1971, 1973, 1999, 2008],
     "European Cup Winners' Cup": [1963],
-    "UEFA Cup / Europa League": [1972, 1984, 2025]
+    "UEFA Cup/Europa League": [1972, 1984, 2025],
+    "FA Charity Shield": [1921, 1952, 1962, 1963, 1968, 1982, 1992],
+    "Second Division": [1920, 1950]
   }
 }

@@ -34,7 +34,17 @@ from .predict import predict_fixtures
 from .lineups import attach_availability, download_season_rosters, load_availability
 from .xg import attach_xg, load_xg, top_up_from_understat
 from .report import write_all
-from .clubs import club_profile, fetch_summaries, league_table, load_trophies, player_stats
+from .clubs import (
+    career_keepers,
+    career_seasons,
+    career_stats,
+    club_profile,
+    fetch_summaries,
+    league_table,
+    load_all_time_scorers,
+    load_trophies,
+    player_stats,
+)
 from .site import SITE_DIR, build as build_site
 from .track import (LOG_PATH, append_predictions, backfill_from_backtest,
                     load_log, save_log, score_log, summarise_log)
@@ -181,6 +191,15 @@ def cmd_log(args) -> int:
     return 0
 
 
+def _season_window_label(seasons: list[int]) -> str:
+    """'2014-15 to 2026-27', from whichever seasons have player data."""
+    if not seasons:
+        return ""
+    fmt = lambda y: f"{y}-{(y + 1) % 100:02d}"  # noqa: E731
+    first, last = fmt(min(seasons)), fmt(max(seasons))
+    return first if first == last else f"{first} to {last}"
+
+
 def cmd_site(args) -> int:
     out = Path(args.out) if args.out else SITE_DIR
     preds = pd.read_pickle(PREDS_PATH) if PREDS_PATH.exists() else None
@@ -206,12 +225,19 @@ def cmd_site(args) -> int:
             | set(feats.loc[feats["season_start"] == season_start, "away_team"].dropna())
         )
         players = player_stats(season_start)
+        # Computed once for all clubs: each reads every season's roster file.
+        career = career_stats()
+        career_gk = career_keepers(feats)
+        career_label = _season_window_label(career_seasons())
         table = league_table(feats, season_start)
         trophies = load_trophies()
+        all_time = load_all_time_scorers()
         summaries = fetch_summaries(teams, refresh=False)
         profiles = [
             club_profile(t, feats, players, season_start, table=table,
-                         trophies=trophies, summaries=summaries)
+                         trophies=trophies, summaries=summaries,
+                         career=career, career_gk=career_gk,
+                         all_time=all_time, career_label=career_label)
             for t in teams
         ]
 

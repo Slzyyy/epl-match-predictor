@@ -320,32 +320,92 @@ def _form_pills(form: pd.DataFrame) -> str:
     return f'<div class="formrow">{pills}<small class="muted">most recent first</small></div>{table}'
 
 
-def _player_table(df: pd.DataFrame, value: str, label: str, expected: str, exp_label: str) -> str:
+def _player_table(
+    df: pd.DataFrame, value: str, label: str, expected: str, exp_label: str,
+    *, empty: str | None = None,
+) -> str:
     if df.empty:
-        return f'<p class="muted">No {label.lower()} recorded yet this season.</p>'
-    show = pd.DataFrame({
+        msg = empty or f"No {label.lower()} recorded yet this season."
+        return f'<p class="muted">{msg}</p>'
+    cols = {
         "Player": [html.escape(str(p)) for p in df["player"]],
         "Apps": df["apps"].astype(int).to_numpy(),
         "Mins": df["minutes"].astype(int).to_numpy(),
         label: df[value].astype(int).to_numpy(),
         exp_label: df[expected].astype(float).round(1).to_numpy(),
-    })
+    }
+    # Present only on a multi-season frame, so one renderer serves both.
+    if "seasons" in df.columns:
+        cols["Seasons"] = df["seasons"].astype(int).to_numpy()
+    show = pd.DataFrame(cols)
     return _table(show, {c: c for c in show.columns})
+
+
+def _keeper_table(keepers: pd.DataFrame, empty: str) -> str:
+    if keepers.empty:
+        return f'<p class="muted">{empty}</p>'
+    cols = {
+        "Goalkeeper": [html.escape(str(p)) for p in keepers["player"]],
+        "Starts": keepers["starts"].astype(int).to_numpy(),
+        "Clean sheets": keepers["clean_sheets"].astype(int).to_numpy(),
+    }
+    if "seasons" in keepers.columns:
+        cols["Seasons"] = keepers["seasons"].astype(int).to_numpy()
+    kt = pd.DataFrame(cols)
+    return _table(kt, {c: c for c in kt.columns})
+
+
+# How each club's record table counts, spelled out rather than left as jargon.
+_BASIS_NOTE = {
+    "all competitions": "all competitions",
+    "competitive matches": ("competitive matches only, so friendlies and most "
+                            "wartime fixtures are excluded"),
+    "league goals only": "league goals only, so cup scorers are understated",
+}
+
+
+def _all_time(entry: dict, wiki_url: str) -> str:
+    """The curated club record-scorer table."""
+    players = entry.get("players") or []
+    if not players:
+        link = f' <a href="{html.escape(wiki_url)}">Wikipedia</a>' if wiki_url else ""
+        return ('<p class="muted">No all-time scoring record recorded. See'
+                f'{link or " the club&#39;s page"}.</p>')
+    rows = []
+    for i, pl in enumerate(players, start=1):
+        years = html.escape(str(pl.get("years") or "")) or "&ndash;"
+        rows.append(
+            f'<tr><td>{i}</td><td>{html.escape(str(pl["player"]))}</td>'
+            f'<td>{int(pl["goals"])}</td><td>{years}</td></tr>'
+        )
+    bits = []
+    basis = entry.get("_basis", "")
+    if basis:
+        bits.append(f"Counts {_BASIS_NOTE.get(basis, basis)}.")
+    if entry.get("_note"):
+        bits.append(html.escape(entry["_note"]))
+    tail = f'<p><small class="muted">{" ".join(bits)}</small></p>' if bits else ""
+    body = "".join(rows)
+    return ('<div class="scroll"><table><thead><tr><th>#</th><th>Player</th>'
+            f'<th>Goals</th><th>Years</th></tr></thead><tbody>{body}</tbody>'
+            f'</table></div>{tail}')
 
 
 def _honours(trophies: dict, wiki_url: str) -> str:
     comps = {k: v for k, v in trophies.items() if not k.startswith("_") and v}
+    note = trophies.get("_note", "")
+    note_html = f'<p><small class="muted">{html.escape(note)}</small></p>' if note else ""
     if not comps:
         link = (f' <a href="{html.escape(wiki_url)}">Wikipedia</a>' if wiki_url else "")
-        return ('<p class="muted">No major senior honours recorded. See'
-                f'{link or " the club&#39;s page"} for the full list.</p>')
+        return note_html or ('<p class="muted">No major senior honours recorded. See'
+                             f'{link or " the club&#39;s page"} for the full list.</p>')
     blocks = []
     for comp, years in sorted(comps.items(), key=lambda kv: (-len(kv[1]), kv[0])):
         yrs = ", ".join(str(y) for y in sorted(years))
         blocks.append(
             f'<div><b>{html.escape(comp)} &times;{len(years)}</b><span>{yrs}</span></div>'
         )
-    return f'<div class="honours">{"".join(blocks)}</div>'
+    return f'<div class="honours">{"".join(blocks)}</div>{note_html}'
 
 
 def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
@@ -375,16 +435,26 @@ def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
         blurb = (f'<p>{html.escape(wiki["extract"])}</p>'
                  f'<p><small class="muted">Summary from Wikipedia, CC BY-SA.{link}</small></p>')
 
-    keepers = profile["keepers"]
-    if keepers.empty:
-        keeper_html = '<p class="muted">No goalkeeper appearances recorded yet.</p>'
-    else:
-        kt = pd.DataFrame({
-            "Goalkeeper": [html.escape(str(p)) for p in keepers["player"]],
-            "Starts": keepers["starts"].astype(int).to_numpy(),
-            "Clean sheets": keepers["clean_sheets"].astype(int).to_numpy(),
-        })
-        keeper_html = _table(kt, {c: c for c in kt.columns})
+    empty_frame = pd.DataFrame()
+    scorers_html = _player_table(profile["scorers"], "goals", "Goals", "xg", "xG")
+    assists_html = _player_table(profile["assists"], "assists", "Assists", "xa", "xA")
+    keeper_html = _keeper_table(
+        profile["keepers"], "No goalkeeper appearances recorded yet."
+    )
+    career_scorers_html = _player_table(
+        profile.get("career_scorers", empty_frame), "goals", "Goals", "xg", "xG",
+        empty="No goals on record for this club over the period covered.",
+    )
+    career_assists_html = _player_table(
+        profile.get("career_assists", empty_frame), "assists", "Assists", "xa", "xA",
+        empty="No assists on record for this club over the period covered.",
+    )
+    career_keeper_html = _keeper_table(
+        profile.get("career_keepers", empty_frame),
+        "No goalkeeper appearances on record over the period covered.",
+    )
+    career_label = profile.get("career_label") or "recent seasons"
+    all_time_html = _all_time(profile.get("all_time", {}), wiki.get("url", ""))
 
     repo_line = (f'<a href="{html.escape(repo_url)}">Source and methodology</a> &middot; '
                  if repo_url else "")
@@ -418,15 +488,39 @@ def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
   </section>
 
   <section>
-    <h2>Top scorers</h2>
-{_player_table(profile["scorers"], "goals", "Goals", "xg", "xG")}
+    <h2>This season</h2>
+    <h3>Top scorers</h3>
+{scorers_html}
     <h3>Most assists</h3>
-{_player_table(profile["assists"], "assists", "Assists", "xa", "xA")}
+{assists_html}
     <h3>Clean sheets</h3>
 {keeper_html}
-    <p><small class="muted">Player data from Understat, this season only.
-    xG and xA are expected goals and assists &mdash; the quality of the chances
-    created, which says more about repeatable performance than the raw count.</small></p>
+    <p><small class="muted">xG and xA are expected goals and assists &mdash; the
+    quality of the chances created, which says more about repeatable performance
+    than the raw count.</small></p>
+  </section>
+
+  <section>
+    <h2>Premier League record, {career_label}</h2>
+    <h3>Top scorers</h3>
+{career_scorers_html}
+    <h3>Most assists</h3>
+{career_assists_html}
+    <h3>Clean sheets</h3>
+{career_keeper_html}
+    <p><small class="muted">For this club only: a player who moved is credited
+    here with what he scored in these colours, not his career total. Computed
+    from Understat appearance data, which begins in 2014-15 &mdash; so it is a
+    record over that window and not an all-time one.</small></p>
+  </section>
+
+  <section>
+    <h2>All-time club record scorers</h2>
+{all_time_html}
+    <p><small class="muted">A club&#39;s all-time scorers reach back long before
+    any free appearance feed, so this list is curated rather than computed: taken
+    from the club&#39;s records article, and from the club&#39;s own site where it
+    publishes a list. Ranked on goals, which is how the sources rank them.</small></p>
   </section>
 
   <section>

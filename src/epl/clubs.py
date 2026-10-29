@@ -20,13 +20,15 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from .config import DATA_RAW, ROOT
+from .config import DATA_RAW, LAST_SEASON, ROOT
 from .lineups import load_season_rosters, season_match_index
+from .xg import FIRST_XG_SEASON
 
 log = logging.getLogger(__name__)
 
 CLUB_DATA = ROOT / "club_data"
 TROPHIES_PATH = CLUB_DATA / "trophies.json"
+ALL_TIME_PATH = CLUB_DATA / "all_time_scorers.json"
 WIKI_TITLES_PATH = CLUB_DATA / "wikipedia_titles.json"
 WIKI_CACHE = DATA_RAW / "wikipedia_summaries.json"
 
@@ -118,27 +120,40 @@ def league_table(matches: pd.DataFrame, season_start: int) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # player-derived
 # --------------------------------------------------------------------------
-def player_stats(season_start: int) -> pd.DataFrame:
-    """Per-player totals for a season, labelled with the club they played for."""
-    empty = pd.DataFrame(
-        {
-            "team": pd.Series(dtype="object"), "player": pd.Series(dtype="object"),
-            "apps": pd.Series(dtype="int64"), "minutes": pd.Series(dtype="float64"),
-            "goals": pd.Series(dtype="float64"), "xg": pd.Series(dtype="float64"),
-            "assists": pd.Series(dtype="float64"), "xa": pd.Series(dtype="float64"),
-        }
-    )
+def _empty_players(*, seasons: bool = False) -> pd.DataFrame:
+    """Typed rather than bare: an object-dtype column reaches ``nlargest`` and
+    raises, which is how an empty roster set first surfaced in CI."""
+    cols = {
+        "team": "object", "player": "object", "apps": "int64",
+        "minutes": "float64", "goals": "float64", "xg": "float64",
+        "assists": "float64", "xa": "float64",
+    }
+    if seasons:
+        cols["seasons"] = "int64"
+    return pd.DataFrame({k: pd.Series(dtype=v) for k, v in cols.items()})
+
+
+def _player_match_frame(season_start: int) -> pd.DataFrame:
+    """Player-match rows for one season, labelled with club and date.
+
+    Empty when the season's roster file has not been fetched, which is the
+    normal state for a fresh checkout and for CI before the fetch step.
+    """
     rosters = load_season_rosters(season_start)
     if rosters.empty:
-        # Typed rather than bare: an object-dtype column reaches nlargest and
-        # raises, which is how this surfaced in CI where no rosters exist.
-        return empty
+        return pd.DataFrame()
     idx = season_match_index(season_start)
-    df = rosters.merge(idx[["understat_id", "home_team", "away_team"]], on="understat_id")
+    # season_start is deliberately left out of the merge: the rosters already
+    # carry it, and taking both would collide into season_start_x/_y.
+    keep = [c for c in ("understat_id", "home_team", "away_team", "date") if c in idx.columns]
+    df = rosters.merge(idx[keep], on="understat_id")
     if df.empty:
-        return empty
+        return pd.DataFrame()
     df["team"] = df["home_team"].where(df["is_home"], df["away_team"])
+    return df
 
+
+def _aggregate_players(df: pd.DataFrame, *, seasons: bool) -> pd.DataFrame:
     agg = {
         "apps": ("time", "size"),
         "minutes": ("time", "sum"),
@@ -148,6 +163,8 @@ def player_stats(season_start: int) -> pd.DataFrame:
     for col, name in (("assists", "assists"), ("xA", "xa")):
         if col in df.columns:
             agg[name] = (col, "sum")
+    if seasons:
+        agg["seasons"] = ("season_start", "nunique")
     out = df.groupby(["team", "player"], as_index=False).agg(**agg)
     for col in ("assists", "xa"):
         if col not in out.columns:
@@ -155,10 +172,52 @@ def player_stats(season_start: int) -> pd.DataFrame:
     return out
 
 
+def player_stats(season_start: int) -> pd.DataFrame:
+    """Per-player totals for a season, labelled with the club they played for."""
+    df = _player_match_frame(season_start)
+    if df.empty:
+        return _empty_players()
+    return _aggregate_players(df, seasons=False)
+
+
+def career_stats(
+    first_season: int = FIRST_XG_SEASON, last_season: int = LAST_SEASON
+) -> pd.DataFrame:
+    """Per-player totals per club across every season of roster data held.
+
+    Understat's player feed starts in 2014-15, so this is a Premier League
+    record over that window rather than a true all-time one; the all-time club
+    record scorers are hand-maintained instead, in ``all_time_scorers.json``.
+    A player who moved clubs gets one row per club, which is what a club page
+    wants: it should credit a striker only with the goals he scored there.
+    """
+    frames = [
+        part
+        for year in range(max(first_season, FIRST_XG_SEASON), last_season + 1)
+        if not (part := _player_match_frame(year)).empty
+    ]
+    if not frames:
+        return _empty_players(seasons=True)
+    return _aggregate_players(pd.concat(frames, ignore_index=True), seasons=True)
+
+
+def career_seasons(
+    first_season: int = FIRST_XG_SEASON, last_season: int = LAST_SEASON
+) -> list[int]:
+    """Which seasons actually have roster data, so a page can say so."""
+    return [
+        year
+        for year in range(max(first_season, FIRST_XG_SEASON), last_season + 1)
+        if not load_season_rosters(year).empty
+    ]
+
+
 def _top_n(players: pd.DataFrame, team: str, value: str, expected: str, n: int) -> pd.DataFrame:
     cols = ["player", "apps", "minutes", value, expected]
     if players.empty or value not in players.columns:
         return pd.DataFrame(columns=cols)
+    if "seasons" in players.columns:
+        cols.append("seasons")
     sub = players[(players["team"] == team) & (players[value].fillna(0) > 0)]
     if sub.empty:
         return pd.DataFrame(columns=cols)
@@ -173,24 +232,85 @@ def top_assists(players: pd.DataFrame, team: str, n: int = 10) -> pd.DataFrame:
     return _top_n(players, team, "assists", "xa", n)
 
 
+_KEEPER_COLS = ["player", "starts", "clean_sheets"]
+
+
+def _team_goals_against(matches: pd.DataFrame) -> pd.DataFrame:
+    """One row per club-match: club, date, goals conceded.
+
+    Long rather than wide so a goalkeeper's appearances join on club and date
+    without caring which end of the fixture the club was.
+    """
+    played = matches[matches["result"].notna()]
+    home = played[["date", "home_team", "away_goals"]].rename(
+        columns={"home_team": "team", "away_goals": "ga"}
+    )
+    away = played[["date", "away_team", "home_goals"]].rename(
+        columns={"away_team": "team", "home_goals": "ga"}
+    )
+    return pd.concat([home, away], ignore_index=True)
+
+
+def _keeper_totals(
+    df: pd.DataFrame, conceded: pd.DataFrame, *, seasons: bool
+) -> pd.DataFrame:
+    """Clean sheets credited to whoever kept goal, for clubs that rotate."""
+    cols = ["team", *_KEEPER_COLS] + (["seasons"] if seasons else [])
+    if df.empty or "position" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    keepers = df[(df["position"] == "GK") & (df["time"] > 0)]
+    if keepers.empty:
+        return pd.DataFrame(columns=cols)
+    merged = keepers.merge(conceded, on=["team", "date"], how="left")
+    agg = {
+        "starts": ("player", "size"),
+        "clean_sheets": ("ga", lambda g: int((g == 0).sum())),
+    }
+    if seasons:
+        agg["seasons"] = ("season_start", "nunique")
+    out = merged.groupby(["team", "player"], as_index=False).agg(**agg)
+    return out.sort_values(["clean_sheets", "starts"], ascending=False).reset_index(drop=True)
+
+
 def clean_sheet_keepers(season_start: int, matches: pd.DataFrame, team: str) -> pd.DataFrame:
     """Clean sheets credited to whoever kept goal, for clubs that rotate."""
-    rosters = load_season_rosters(season_start)
-    if rosters.empty:
-        return pd.DataFrame(columns=["player", "starts", "clean_sheets"])
-    idx = season_match_index(season_start)
-    df = rosters.merge(idx[["understat_id", "home_team", "away_team", "date"]], on="understat_id")
-    df["team"] = df["home_team"].where(df["is_home"], df["away_team"])
-    keepers = df[(df["team"] == team) & (df["position"] == "GK") & (df["time"] > 0)]
-    if keepers.empty:
-        return pd.DataFrame(columns=["player", "starts", "clean_sheets"])
-
-    played = season_matches(matches, team, season_start)[["date", "ga"]]
-    merged = keepers.merge(played, on="date", how="left")
-    out = merged.groupby("player", as_index=False).agg(
-        starts=("player", "size"), clean_sheets=("ga", lambda g: int((g == 0).sum()))
+    out = _keeper_totals(
+        _player_match_frame(season_start), _team_goals_against(matches), seasons=False
     )
-    return out.sort_values(["clean_sheets", "starts"], ascending=False).reset_index(drop=True)
+    if out.empty:
+        return pd.DataFrame(columns=_KEEPER_COLS)
+    return out[out["team"] == team].drop(columns="team").reset_index(drop=True)
+
+
+def career_keepers(
+    matches: pd.DataFrame,
+    first_season: int = FIRST_XG_SEASON,
+    last_season: int = LAST_SEASON,
+) -> pd.DataFrame:
+    """Clean sheets per goalkeeper per club across every season held.
+
+    Computed once for every club rather than per club: each season's roster
+    file is read from disk, and twenty clubs re-reading thirteen files is the
+    slowest thing the site build could do.
+    """
+    frames = [
+        part
+        for year in range(max(first_season, FIRST_XG_SEASON), last_season + 1)
+        if not (part := _player_match_frame(year)).empty
+    ]
+    if not frames:
+        return pd.DataFrame(columns=["team", *_KEEPER_COLS, "seasons"])
+    return _keeper_totals(
+        pd.concat(frames, ignore_index=True), _team_goals_against(matches), seasons=True
+    )
+
+
+def team_keepers(keepers: pd.DataFrame, team: str, n: int = 10) -> pd.DataFrame:
+    """One club's goalkeepers from a career frame, best record first."""
+    if keepers.empty or "team" not in keepers.columns:
+        return pd.DataFrame(columns=[*_KEEPER_COLS, "seasons"])
+    sub = keepers[keepers["team"] == team].drop(columns="team")
+    return sub.head(n).reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------
@@ -207,6 +327,19 @@ def load_trophies() -> dict:
     if not TROPHIES_PATH.exists():
         return {}
     return json.loads(TROPHIES_PATH.read_text(encoding="utf-8"))
+
+
+def load_all_time_scorers() -> dict:
+    """All-time club goalscoring records, from the hand-maintained file.
+
+    Understat's player feed only reaches 2014-15, so the club record scorers -
+    almost all of whom played decades before that - cannot be computed here.
+    Researched from each club's records article rather than written from
+    memory; the file's own _README gives the source and basis per club.
+    """
+    if not ALL_TIME_PATH.exists():
+        return {}
+    return json.loads(ALL_TIME_PATH.read_text(encoding="utf-8"))
 
 
 def _wiki_title(team: str, titles: dict) -> str:
@@ -263,9 +396,21 @@ def club_profile(
     table: pd.DataFrame | None = None,
     trophies: dict | None = None,
     summaries: dict | None = None,
+    career: pd.DataFrame | None = None,
+    career_gk: pd.DataFrame | None = None,
+    all_time: dict | None = None,
+    career_label: str = "",
 ) -> dict:
-    """Everything one club page needs."""
+    """Everything one club page needs.
+
+    The career and all-time blocks are passed in rather than computed here:
+    both are the same for every club, and recomputing them twenty times would
+    re-read every season's roster file twenty times over.
+    """
     trophies = trophies if trophies is not None else load_trophies()
+    all_time = all_time if all_time is not None else load_all_time_scorers()
+    career = career if career is not None else _empty_players(seasons=True)
+    career_gk = career_gk if career_gk is not None else pd.DataFrame()
     summaries = summaries or {}
     summary = season_summary(matches, team, season_start)
     position = None
@@ -280,6 +425,11 @@ def club_profile(
         "scorers": top_scorers(players, team),
         "assists": top_assists(players, team),
         "keepers": clean_sheet_keepers(season_start, matches, team),
+        "career_scorers": top_scorers(career, team),
+        "career_assists": top_assists(career, team),
+        "career_keepers": team_keepers(career_gk, team),
+        "all_time": all_time.get(team, {}),
+        "career_label": career_label,
         "trophies": trophies.get(team, {}),
         "wiki": summaries.get(team, {}),
     }
