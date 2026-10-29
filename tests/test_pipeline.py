@@ -1556,3 +1556,85 @@ def test_club_page_renders_the_career_and_all_time_sections(tmp_path):
     assert "Thierry Henry" in text and "228" in text
     assert "Seasons" in text          # the career tables carry the extra column
     assert "League Champions &times;1" in text
+
+
+# ---------------------------------------------------------------------------
+# league table
+# ---------------------------------------------------------------------------
+def _table_profile(team, slug, pos, *, played=10, won=6, drawn=2, lost=2,
+                   gf=20, ga=10, pts=20, form=("W", "L", "D")):
+    rows = pd.DataFrame({
+        # recent_form hands back most-recent-first, so build it that way.
+        "date": pd.to_datetime(["2026-10-24", "2026-10-17", "2026-10-03"][:len(form)]),
+        "opponent": ["Everton", "Leeds", "Hull"][:len(form)],
+        "is_home": [True, False, True][:len(form)],
+        "gf": [2, 0, 1][:len(form)],
+        "ga": [0, 1, 1][:len(form)],
+        "outcome": list(form),
+    })
+    return {
+        "team": team, "slug": slug, "position": pos, "form": rows,
+        "season": {"played": played, "won": won, "drawn": drawn, "lost": lost,
+                   "goals_for": gf, "goals_against": ga,
+                   "goal_difference": gf - ga, "clean_sheets": 4,
+                   "failed_to_score": 1, "points": pts},
+    }
+
+
+def test_league_table_ranks_clubs_and_marks_both_zones():
+    from epl.site import _league_table
+
+    profiles = [_table_profile(f"Club {i}", f"club-{i}", i, pts=60 - i)
+                for i in range(1, 21)]
+    out = _league_table(profiles)
+
+    assert "<h2>Premier League table</h2>" in out
+    # Rows appear in league order.
+    assert out.index("club-1.html") < out.index("club-10.html") < out.index("club-20.html")
+    # Top five marked for Europe, bottom three for relegation, middle neither.
+    assert out.count("zone z-eu") == 5
+    assert out.count("zone z-rel") == 3
+    assert out.count('class="zone"') == 12
+    # Every club links to its own page.
+    for i in range(1, 21):
+        assert f'href="clubs/club-{i}.html"' in out
+
+
+def test_league_table_shows_signed_goal_difference_and_form_oldest_first():
+    import re
+
+    from epl.site import _league_table
+
+    out = _league_table([
+        _table_profile("Arsenal", "arsenal", 1, gf=20, ga=10, form=("W", "L", "D")),
+        _table_profile("Hull", "hull", 2, gf=5, ga=18),
+    ])
+    assert "<td>+10</td>" in out
+    assert "<td>-13</td>" in out
+
+    row = out[out.index("arsenal.html"):out.index("hull.html")]
+    pills = re.findall(r'class="pill (\w)"', row)
+    # Stored most-recent-first (W, L, D); a form guide reads the other way.
+    assert pills == ["D", "L", "W"]
+    assert "Everton 2-0" in row          # hover text carries the score
+
+
+def test_league_table_falls_back_to_the_club_grid_before_a_ball_is_kicked():
+    from epl.site import _league_table
+
+    pre = [_table_profile("Arsenal", "arsenal", None, played=0)]
+    pre[0]["position"] = None
+    pre[0]["season"] = {"played": 0}
+    pre[0]["form"] = pd.DataFrame(
+        columns=["date", "opponent", "is_home", "gf", "ga", "outcome"]
+    )
+    out = _league_table(pre)
+    assert "season not started" in out
+    assert "<h2>Premier League table</h2>" not in out
+    assert 'href="clubs/arsenal.html"' in out
+
+
+def test_league_table_is_empty_without_profiles():
+    from epl.site import _league_table
+
+    assert _league_table([]) == ""

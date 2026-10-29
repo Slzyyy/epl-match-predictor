@@ -114,6 +114,28 @@ figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
 .pill.W{background:var(--away)} .pill.D{background:var(--draw)} .pill.L{background:#c2504a}
 .formrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px}
 .back{display:inline-block; margin-bottom:18px; font-size:.88rem}
+.ltab{width:100%; border-collapse:collapse; font-size:.9rem;
+      font-variant-numeric:tabular-nums}
+.ltab th,.ltab td{padding:9px 6px; border-bottom:1px solid var(--line); text-align:right}
+.ltab th{color:var(--muted); font-weight:600; font-size:.75rem;
+         text-transform:uppercase; letter-spacing:.04em}
+.ltab th:nth-child(2),.ltab td:nth-child(2){text-align:left; width:100%}
+.ltab th:first-child,.ltab td:first-child{text-align:center; color:var(--muted);
+         padding-left:10px; white-space:nowrap}
+.ltab tbody tr:hover{background:var(--panel)}
+.ltab a{color:inherit; text-decoration:none; font-weight:600}
+.ltab a:hover{color:var(--home)}
+.ltab .pts{font-weight:700}
+.ltab td.zone{border-left:3px solid transparent}
+.ltab td.z-eu{border-left-color:var(--away)}
+.ltab td.z-rel{border-left-color:#c2504a}
+.ltab .form{white-space:nowrap; padding-left:14px}
+.ltab .pill{width:20px; height:20px; font-size:.68rem; border-radius:4px; margin-right:3px}
+.k-eu{background:var(--away)} .k-rel{background:#c2504a}
+@media (max-width:620px){
+  .ltab .opt{display:none}
+  .ltab th,.ltab td{padding:9px 4px}
+}
 .club-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:10px}
 .club-grid a{
   display:block; padding:10px 12px; border:1px solid var(--line);
@@ -564,7 +586,7 @@ def build_club_pages(
 
 
 def _club_index(profiles: list[dict]) -> str:
-    """The grid of club links on the front page."""
+    """Grid of club links, used before any match has been played."""
     if not profiles:
         return ""
     ordered = sorted(profiles, key=lambda p: (p["position"] or 99, p["team"]))
@@ -582,6 +604,78 @@ def _club_index(profiles: list[dict]) -> str:
     <div class="club-grid">
 {"".join(cards)}
     </div>
+  </section>
+
+"""
+
+
+# Places marked at each end of the table. Which European competition a place
+# leads to depends on the cup winners and on UEFA's coefficient spots, so the
+# top group is marked as "European places" rather than named.
+EURO_PLACES = 5
+RELEGATION_PLACES = 3
+
+
+def _table_form(form: pd.DataFrame) -> str:
+    """Last five results as pills, oldest first - how a form guide reads."""
+    if form.empty:
+        return ""
+    return "".join(
+        f'<span class="pill {r.outcome}" title="{html.escape(str(r.opponent))} '
+        f'{int(r.gf)}-{int(r.ga)}">{r.outcome}</span>'
+        for r in form.iloc[::-1].itertuples()
+    )
+
+
+def _league_table(profiles: list[dict]) -> str:
+    """The league table: standings and the way in to every club page."""
+    ranked = [p for p in profiles if p.get("position") and p["season"].get("played")]
+    if not ranked:
+        # Nothing has been played yet, so there is no table to show.
+        return _club_index(profiles)
+    ordered = sorted(ranked, key=lambda p: p["position"])
+    last = len(ordered)
+
+    rows = []
+    for p in ordered:
+        s, pos = p["season"], p["position"]
+        if pos <= EURO_PLACES:
+            zone = " z-eu"
+        elif pos > last - RELEGATION_PLACES:
+            zone = " z-rel"
+        else:
+            zone = ""
+        rows.append(
+            f'<tr><td class="zone{zone}">{pos}</td>'
+            f'<td><a href="clubs/{p["slug"]}.html">{html.escape(p["team"])}</a></td>'
+            f'<td>{s["played"]}</td>'
+            f'<td class="opt">{s["won"]}</td>'
+            f'<td class="opt">{s["drawn"]}</td>'
+            f'<td class="opt">{s["lost"]}</td>'
+            f'<td class="opt">{s["goals_for"]}</td>'
+            f'<td class="opt">{s["goals_against"]}</td>'
+            f'<td>{s["goal_difference"]:+d}</td>'
+            f'<td class="pts">{s["points"]}</td>'
+            f'<td class="form opt">{_table_form(p["form"])}</td></tr>'
+        )
+
+    head = ('<tr><th>#</th><th>Club</th><th>P</th><th class="opt">W</th>'
+            '<th class="opt">D</th><th class="opt">L</th><th class="opt">GF</th>'
+            '<th class="opt">GA</th><th>GD</th><th>Pts</th>'
+            '<th class="opt">Form</th></tr>')
+    body = "".join(rows)
+    return f"""  <section>
+    <h2>Premier League table</h2>
+    <p>Click any club for its form, scorers, assists, clean sheets and honours.</p>
+    <p class="key"><span><i class="k-eu"></i>European places</span>
+      <span><i class="k-rel"></i>Relegation</span></p>
+    <div class="scroll"><table class="ltab"><thead>{head}</thead>
+      <tbody>{body}</tbody></table></div>
+    <p><small class="muted">Computed from results, not taken from a feed, so it
+    reflects exactly the matches this site knows about. Which European competition
+    each of the top five places leads to depends on the cup winners, so they are
+    marked as one group. Form runs oldest to newest; hover a result for the
+    score.</small></p>
   </section>
 
 """
@@ -614,7 +708,7 @@ def build(
 
     perf_table, cur_table = _performance(preds) if preds is not None else ("", "")
     results = _results_section(logged, linked=linked) if logged is not None else ""
-    clubs = _club_index(profiles) if profiles else ""
+    clubs = _league_table(profiles) if profiles else ""
 
     figures = []
     for name, title, caption in CHARTS:
