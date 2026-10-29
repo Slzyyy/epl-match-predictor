@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from .config import REPORTS, ROOT
+from .project import DEFAULT_SIMS
 from .evaluate import summarise
 
 SITE_DIR = ROOT / "site"
@@ -132,6 +133,8 @@ figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
 .ltab .form{white-space:nowrap; padding-left:14px}
 .ltab .pill{width:20px; height:20px; font-size:.68rem; border-radius:4px; margin-right:3px}
 .k-eu{background:var(--away)} .k-rel{background:#c2504a}
+.ltab .rng{color:var(--muted); font-size:.82rem; white-space:nowrap}
+.ltab .dim{color:var(--muted)}
 @media (max-width:620px){
   .ltab .opt{display:none}
   .ltab th,.ltab td{padding:9px 4px}
@@ -681,12 +684,74 @@ def _league_table(profiles: list[dict]) -> str:
 """
 
 
+def _chance(p: float) -> str:
+    """A probability as a percentage, without pretending to false precision."""
+    if p < 0.005:
+        return '<span class="dim">&ndash;</span>'
+    if p > 0.995:
+        return "&gt;99%"
+    return f"{round(p * 100)}%"
+
+
+def _projected_table(projection: pd.DataFrame | None, linked: set[str] | None) -> str:
+    """Where the model expects the season to finish."""
+    if projection is None or projection.empty:
+        return ""
+    last = len(projection)
+    still_to_play = int(projection["remaining"].sum()) // 2
+
+    rows = []
+    for i, r in enumerate(projection.itertuples(), start=1):
+        if i <= EURO_PLACES:
+            zone = " z-eu"
+        elif i > last - RELEGATION_PLACES:
+            zone = " z-rel"
+        else:
+            zone = ""
+        rows.append(
+            f'<tr><td class="zone{zone}">{i}</td>'
+            f'<td>{_team_link(r.team, linked)}</td>'
+            f'<td>{r.proj_points:.0f}</td>'
+            f'<td class="rng opt">{r.pts_low:.0f}&ndash;{r.pts_high:.0f}</td>'
+            f'<td>{_chance(r.p_title)}</td>'
+            f'<td class="opt">{_chance(r.p_europe)}</td>'
+            f'<td>{_chance(r.p_relegation)}</td></tr>'
+        )
+
+    head = ('<tr><th>#</th><th>Club</th><th>Pts</th>'
+            '<th class="opt">Likely range</th><th>Title</th>'
+            '<th class="opt">Top 5</th><th>Relegated</th></tr>')
+    body = "".join(rows)
+    lead = (f"{still_to_play:,} fixtures still to play." if still_to_play
+            else "Every fixture has been played, so this is the final table.")
+    intro = (f"{lead} Each one simulated {DEFAULT_SIMS:,} times from the model&#39;s "
+             "own probabilities, which gives every club a range of finishes "
+             "rather than a single guess.")
+    note = ("Points are the average across all simulations and the range covers "
+            "the middle 80% of them. Two things to hold in mind: every match uses "
+            "the model&#39;s view of the clubs <em>today</em>, so a club in form "
+            "stays in form for the whole run; and only results are simulated, not "
+            "scores, so clubs level on points are split by the goal difference "
+            "they have now. The model is beaten by the bookmakers, so read this "
+            "as what the model believes rather than what will happen.")
+    return (
+        '  <section>\n'
+        '    <h2>Projected final table</h2>\n'
+        f'    <p>{intro}</p>\n'
+        f'    <div class="scroll"><table class="ltab"><thead>{head}</thead>\n'
+        f'      <tbody>{body}</tbody></table></div>\n'
+        f'    <p><small class="muted">{note}</small></p>\n'
+        '  </section>\n\n'
+    )
+
+
 def build(
     fixtures: pd.DataFrame,
     preds: pd.DataFrame | None = None,
     *,
     logged: pd.DataFrame | None = None,
     profiles: list[dict] | None = None,
+    projection: pd.DataFrame | None = None,
     season_label: str = "",
     out_dir: Path | None = None,
     repo_url: str | None = None,
@@ -709,6 +774,7 @@ def build(
     perf_table, cur_table = _performance(preds) if preds is not None else ("", "")
     results = _results_section(logged, linked=linked) if logged is not None else ""
     clubs = _league_table(profiles) if profiles else ""
+    projected = _projected_table(projection, linked)
 
     figures = []
     for name, title, caption in CHARTS:
@@ -757,7 +823,7 @@ def build(
     form, Elo ratings and expected goals. They never see bookmaker prices.</small></p>
   </section>
 
-{clubs}{results}  <section>
+{clubs}{projected}{results}  <section>
     <h2>How it actually performs</h2>
     <div class="note">
       <strong>This model does not beat the bookmakers.</strong>

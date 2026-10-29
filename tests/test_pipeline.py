@@ -1638,3 +1638,163 @@ def test_league_table_is_empty_without_profiles():
     from epl.site import _league_table
 
     assert _league_table([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# projected final table
+# ---------------------------------------------------------------------------
+def _standings(rows):
+    """rows: (team, played, points, goal_difference)."""
+    return pd.DataFrame(rows, columns=["team", "played", "points", "goal_difference"])
+
+
+def _fixtures(rows):
+    """rows: (home, away, p_home, p_draw, p_away)."""
+    return pd.DataFrame(
+        rows, columns=["home_team", "away_team", "p_home", "p_draw", "p_away"]
+    )
+
+
+def test_projection_with_certain_results_is_arithmetic():
+    from epl.project import simulate_season
+
+    standings = _standings([("A", 1, 3, 2), ("B", 1, 0, -2)])
+    # Certainties, so every simulation must agree exactly.
+    fixtures = _fixtures([("B", "A", 1.0, 0.0, 0.0), ("A", "B", 0.0, 0.0, 1.0)])
+    out = simulate_season(standings, fixtures, n_sims=200).set_index("team")
+
+    assert out.loc["B", "proj_points"] == 6      # 0 + 3 + 3
+    assert out.loc["A", "proj_points"] == 3      # 3 + 0 + 0
+    assert out.loc["B", "pts_low"] == out.loc["B", "pts_high"] == 6
+    assert out.loc["B", "p_title"] == 1.0
+    assert out.loc["A", "p_title"] == 0.0
+    assert out.loc["B", "remaining"] == 2
+
+
+def test_projection_without_fixtures_freezes_the_current_table():
+    from epl.project import simulate_season
+
+    standings = _standings([("A", 38, 90, 50), ("B", 38, 80, 30), ("C", 38, 20, -40)])
+    out = simulate_season(standings, pd.DataFrame(), n_sims=50)
+
+    assert list(out["team"]) == ["A", "B", "C"]
+    assert list(out["proj_points"]) == [90, 80, 20]
+    assert out["remaining"].sum() == 0
+    assert out.set_index("team").loc["A", "p_title"] == 1.0
+
+
+def test_projection_probabilities_are_internally_consistent():
+    from epl.project import RELEGATION_PLACES, simulate_season
+
+    teams = [f"T{i:02d}" for i in range(20)]
+    standings = _standings([(t, 10, 15, 0) for t in teams])
+    fixtures = _fixtures([
+        (teams[i], teams[(i + 1) % 20], 0.45, 0.27, 0.28) for i in range(20)
+    ])
+    out = simulate_season(standings, fixtures, n_sims=500)
+
+    # Exactly one champion and exactly three relegated clubs in every season.
+    assert out["p_title"].sum() == pytest.approx(1.0)
+    assert out["p_europe"].sum() == pytest.approx(5.0)
+    assert out["p_relegation"].sum() == pytest.approx(float(RELEGATION_PLACES))
+    assert ((out["p_title"] >= 0) & (out["p_title"] <= 1)).all()
+    # The range brackets the mean.
+    assert (out["pts_low"] <= out["proj_points"]).all()
+    assert (out["proj_points"] <= out["pts_high"]).all()
+    # Ordered best first.
+    assert list(out["proj_points"]) == sorted(out["proj_points"], reverse=True)
+
+
+def test_projection_breaks_ties_on_goal_difference():
+    from epl.project import simulate_season
+
+    # Level on points with nothing left to play: goal difference decides.
+    standings = _standings([("Poor", 38, 70, -5), ("Good", 38, 70, 25)])
+    out = simulate_season(standings, pd.DataFrame(), n_sims=20)
+    assert list(out["team"]) == ["Good", "Poor"]
+    assert out.set_index("team").loc["Good", "p_title"] == 1.0
+
+
+def test_projection_renormalises_probabilities_that_do_not_sum_to_one():
+    from epl.project import simulate_season
+
+    standings = _standings([("A", 0, 0, 0), ("B", 0, 0, 0)])
+    # Sums to 0.5; after renormalising this is a certain home win.
+    out = simulate_season(standings, _fixtures([("A", "B", 0.5, 0.0, 0.0)]), n_sims=100)
+    assert out.set_index("team").loc["A", "proj_points"] == 3
+
+
+def test_projection_is_reproducible_for_the_same_seed():
+    from epl.project import simulate_season
+
+    standings = _standings([("A", 5, 8, 1), ("B", 5, 7, 0), ("C", 5, 6, -1)])
+    fixtures = _fixtures([("A", "B", 0.4, 0.3, 0.3), ("C", "A", 0.4, 0.3, 0.3)])
+    a = simulate_season(standings, fixtures, n_sims=300, seed=7)
+    b = simulate_season(standings, fixtures, n_sims=300, seed=7)
+    c = simulate_season(standings, fixtures, n_sims=300, seed=8)
+    pd.testing.assert_frame_equal(a, b)
+    assert not a["proj_points"].equals(c["proj_points"])
+
+
+def test_projected_table_renders_and_links_clubs():
+    from epl.site import _projected_table
+
+    proj = pd.DataFrame({
+        "team": ["Arsenal", "Hull"], "played": [8, 8], "points": [21, 5],
+        "goal_difference": [8, -8], "remaining": [30, 30],
+        "proj_points": [78.4, 31.2], "proj_position": [1.0, 20.0],
+        "pts_low": [70.0, 24.0], "pts_high": [86.0, 39.0],
+        "p_title": [0.62, 0.0], "p_europe": [0.97, 0.001],
+        "p_relegation": [0.0, 0.84],
+    })
+    out = _projected_table(proj, {"Arsenal", "Hull"})
+
+    assert "<h2>Projected final table</h2>" in out
+    assert "30 fixtures still to play" in out
+    assert 'href="clubs/arsenal.html"' in out
+    assert "<td>78</td>" in out and "70&ndash;86" in out
+    assert "62%" in out and "84%" in out
+    assert out.count("&ndash;</span>") >= 1      # 0% shown as a dash, not "0%"
+    assert "beaten by the bookmakers" in out
+
+
+def test_projected_table_is_omitted_when_there_is_nothing_to_project():
+    from epl.site import _projected_table
+
+    assert _projected_table(None, set()) == ""
+    assert _projected_table(pd.DataFrame(), set()) == ""
+
+
+def test_projection_mean_points_match_an_analytic_expectation():
+    """Monte Carlo must agree with the arithmetic it is approximating.
+
+    This is the check that catches a team-index mix-up: it ties each club's
+    simulated total back to its own fixtures, home and away separately.
+    """
+    from epl.project import simulate_season
+
+    rng = np.random.default_rng(3)
+    teams = [f"T{i:02d}" for i in range(10)]
+    standings = _standings([(t, 4, int(rng.integers(0, 12)), int(rng.integers(-6, 7)))
+                            for t in teams])
+
+    rows = []
+    for home in range(10):
+        for away in range(10):
+            if home == away:
+                continue
+            p = rng.dirichlet([4.0, 2.5, 3.0])
+            rows.append((teams[home], teams[away], *p))
+    fixtures = _fixtures(rows)
+
+    out = simulate_season(standings, fixtures, n_sims=4000, seed=1).set_index("team")
+
+    base = standings.set_index("team")["points"]
+    expected = base.astype(float).copy()
+    for r in fixtures.itertuples():
+        expected[r.home_team] += 3 * r.p_home + r.p_draw
+        expected[r.away_team] += 3 * r.p_away + r.p_draw
+
+    for team in teams:
+        assert out.loc[team, "proj_points"] == pytest.approx(expected[team], abs=0.35), team
+        assert out.loc[team, "remaining"] == 18

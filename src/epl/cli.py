@@ -31,6 +31,7 @@ from .features import (build_features, core_feature_columns, drop_availability,
 from .metrics import calibration_table
 from .model import MODEL_KINDS, feature_importance, fit_model
 from .predict import predict_fixtures
+from .project import simulate_season
 from .lineups import attach_availability, download_season_rosters, load_availability
 from .xg import attach_xg, load_xg, top_up_from_understat
 from .report import write_all
@@ -208,13 +209,19 @@ def cmd_site(args) -> int:
     if preds is None:
         print("note: no cached backtest, so the performance section will be "
               "omitted; run `backtest` first", file=sys.stderr)
-    fixtures = predict_fixtures(
+    # Every remaining fixture, not just the next few days: the projection needs
+    # the whole run-in, and asking twice would fit the model twice.
+    all_fixtures = predict_fixtures(
         kind=args.main_model,
         refresh=not args.no_refresh,
         include_odds=args.use_odds,
-        limit_days=args.days,
+        limit_days=None,
         feature_set=args.feature_set,
     )
+    fixtures = all_fixtures
+    if not all_fixtures.empty and args.days is not None:
+        horizon = all_fixtures["date"].min() + pd.Timedelta(days=args.days)
+        fixtures = all_fixtures[all_fixtures["date"] <= horizon]
     profiles = None
     season_label = ""
     if not args.no_clubs:
@@ -241,8 +248,13 @@ def cmd_site(args) -> int:
             for t in teams
         ]
 
+    projection = None
+    if profiles and not table.empty:
+        projection = simulate_season(table, all_fixtures)
+
     dest = build_site(fixtures, preds, logged=logged, profiles=profiles,
-                      season_label=season_label, out_dir=out, repo_url=args.repo_url)
+                      projection=projection, season_label=season_label,
+                      out_dir=out, repo_url=args.repo_url)
     n_clubs = len(profiles) if profiles else 0
     print(f"{len(fixtures)} fixtures, {n_clubs} club pages; wrote {dest}")
     return 0
