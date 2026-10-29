@@ -9,6 +9,7 @@ move, which is once or twice a week.
 from __future__ import annotations
 
 import html
+import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +136,18 @@ figcaption{color:var(--muted); font-size:.84rem; margin-top:8px}
 .k-eu{background:var(--away)} .k-rel{background:#c2504a}
 .ltab .rng{color:var(--muted); font-size:.82rem; white-space:nowrap}
 .ltab .dim{color:var(--muted)}
+.live-card{
+  border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px 14px; margin-bottom:8px; background:var(--panel);
+}
+.live-card.on{border-color:#c2504a}
+.live-top{display:flex; justify-content:space-between; align-items:baseline; gap:10px}
+.live-score{font-variant-numeric:tabular-nums; font-weight:700; margin:0 6px}
+.live-state{font-size:.78rem; font-weight:700; white-space:nowrap; color:var(--muted)}
+.live-state.on{color:#fff; background:#c2504a; border-radius:999px; padding:2px 9px}
+.live-pick{font-size:.78rem; color:var(--muted); margin-top:8px}
+.live-meta{display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;
+           font-size:.8rem; color:var(--muted); margin:0 0 12px}
 .chart{width:100%; height:auto; color:var(--muted); display:block; margin:4px 0 2px}
 .chart .grid{stroke:var(--line); stroke-width:1}
 .chart .axis{fill:currentColor; font-size:11px}
@@ -876,6 +889,206 @@ def _projection_movement(history: pd.DataFrame | None) -> str:
     )
 
 
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard"
+
+# ESPN's display names on the left, this project's on the right. Anything not
+# listed already matches: Arsenal, Aston Villa, Brentford, Chelsea, Crystal
+# Palace, Everton, Fulham, Liverpool, Sunderland.
+ESPN_ALIASES = {
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion": "Brighton",
+    "Coventry City": "Coventry",
+    "Hull City": "Hull",
+    "Ipswich Town": "Ipswich",
+    "Leeds United": "Leeds",
+    "Manchester City": "Man City",
+    "Manchester United": "Man United",
+    "Newcastle United": "Newcastle",
+    "Nottingham Forest": "Nott\'m Forest",
+    "Tottenham Hotspur": "Tottenham",
+}
+
+LIVE_JS = """
+(function () {
+  var root = document.getElementById("live-scores");
+  var cfgEl = document.getElementById("live-config");
+  if (!root || !cfgEl) return;
+
+  var cfg, FEED = "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard";
+  try { cfg = JSON.parse(cfgEl.textContent); } catch (e) { return; }
+  var meta = document.getElementById("live-meta");
+  var timer = null, stopped = false;
+
+  function esc(s) {
+    var d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  }
+  function name(n) { return cfg.aliases[n] || n; }
+  function club(n) {
+    var team = name(n), slug = cfg.slugs[team];
+    return slug ? '<a href="clubs/' + slug + '.html">' + esc(team) + "</a>" : esc(team);
+  }
+  function kickoff(iso) {
+    var d = new Date(iso);
+    if (isNaN(d)) return "";
+    return d.toLocaleString(undefined, {
+      weekday: "short", hour: "2-digit", minute: "2-digit"
+    });
+  }
+  function bar(p) {
+    var names = ["home win", "draw", "away win"], cls = ["h", "d", "a"], out = "";
+    for (var i = 0; i < 3; i++) {
+      var pct = Math.round(p[i] * 100);
+      out += '<div class="seg ' + cls[i] + '" style="width:' + pct + '%" title="' +
+             names[i] + ' ' + pct + '%">' + (pct >= 12 ? pct + "%" : "") + "</div>";
+    }
+    return '<div class="bar small">' + out + "</div>";
+  }
+
+  function card(ev) {
+    var c = ev.competitions[0], st = c.status || {}, type = st.type || {};
+    var home = null, away = null;
+    for (var i = 0; i < c.competitors.length; i++) {
+      if (c.competitors[i].homeAway === "home") home = c.competitors[i];
+      else away = c.competitors[i];
+    }
+    if (!home || !away) return "";
+
+    var state = type.state, playing = state === "in", done = state === "post";
+    var label = playing ? (st.displayClock || "Live")
+                        : (done ? (type.shortDetail || "FT") : kickoff(ev.date));
+    var score = (playing || done)
+      ? esc(home.score) + "&ndash;" + esc(away.score)
+      : '<span class="muted">v</span>';
+
+    var html = '<div class="live-card' + (playing ? " on" : "") + '">' +
+      '<div class="live-top"><span class="teams">' + club(home.team.displayName) +
+      '<span class="live-score">' + score + "</span>" + club(away.team.displayName) +
+      '</span><span class="live-state' + (playing ? " on" : "") + '">' +
+      esc(label) + "</span></div>";
+
+    var pred = cfg.predictions[name(home.team.displayName) + "|" + name(away.team.displayName)];
+    if (pred) {
+      html += bar(pred);
+      if (playing || done) {
+        var hs = parseInt(home.score, 10), as = parseInt(away.score, 10), actual;
+        if (!isNaN(hs) && !isNaN(as)) {
+          actual = hs > as ? 0 : (hs === as ? 1 : 2);
+          var best = pred.indexOf(Math.max(pred[0], pred[1], pred[2]));
+          var words = ["a home win", "a draw", "an away win"];
+          html += '<p class="live-pick">Model favoured ' + words[best] + " at " +
+            Math.round(pred[best] * 100) + "%. " +
+            (actual === best
+              ? (done ? "That is how it finished." : "That is how it stands.")
+              : (done ? "It did not go that way." : "Not how it stands right now.")) +
+            "</p>";
+        }
+      }
+    }
+    return html + "</div>";
+  }
+
+  function render(data) {
+    var events = (data && data.events) || [];
+    if (!events.length) {
+      root.innerHTML = '<p class="muted">No Premier League matches are scheduled ' +
+                       "right now. This fills in on matchday.</p>";
+      return false;
+    }
+    var html = "", live = false;
+    for (var i = 0; i < events.length; i++) {
+      html += card(events[i]);
+      var t = events[i].competitions[0].status;
+      if (t && t.type && t.type.state === "in") live = true;
+    }
+    root.innerHTML = html;
+    if (meta) {
+      meta.innerHTML = '<span>Updated ' +
+        esc(new Date().toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"})) +
+        "</span><span>Scores from ESPN, refreshed in your browser</span>";
+    }
+    return live;
+  }
+
+  function schedule(live) {
+    if (stopped) return;
+    clearTimeout(timer);
+    timer = setTimeout(load, live ? 45000 : 300000);
+  }
+
+  function load() {
+    fetch(FEED, {cache: "no-store"})
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { schedule(render(d)); })
+      .catch(function () {
+        if (!root.dataset.loaded) {
+          root.innerHTML = '<p class="muted">Live scores could not be loaded just ' +
+            "now. The fixtures and predictions below are unaffected.</p>";
+        }
+        schedule(false);
+      })
+      .then(function () { root.dataset.loaded = "1"; });
+  }
+
+  // Stop polling a tab nobody is looking at, and catch up when it returns.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { stopped = true; clearTimeout(timer); }
+    else { stopped = false; load(); }
+  });
+  load();
+})();
+"""
+
+
+def _live_section(fixtures: pd.DataFrame, linked: set[str] | None) -> str:
+    """Live scores, fetched in the reader's browser.
+
+    The site itself is static and rebuilt weekly, so nothing the build writes
+    can be live. The scores are therefore pulled client-side from ESPN's
+    public scoreboard, which needs no key and allows cross-origin requests -
+    which matters, because this repository is public and could not hold one.
+
+    The model's own probabilities for each match are embedded here so the two
+    can be shown together: a score on its own is available anywhere, but a
+    score against what this model expected is the thing worth looking at.
+    """
+    from .clubs import slug
+
+    predictions: dict[str, list[float]] = {}
+    if fixtures is not None and not fixtures.empty:
+        for r in fixtures.itertuples():
+            predictions[f"{r.home_team}|{r.away_team}"] = [
+                round(float(r.p_home), 4), round(float(r.p_draw), 4),
+                round(float(r.p_away), 4),
+            ]
+    slugs = {t: slug(t) for t in sorted(linked or set())}
+    config = json.dumps(
+        {"aliases": ESPN_ALIASES, "slugs": slugs, "predictions": predictions},
+        separators=(",", ":"),
+    )
+    # </script> inside a script element would close it early.
+    config = config.replace("</", "<\\/")
+
+    return f"""  <section>
+    <h2>Live scores</h2>
+    <p>Today&#39;s matches as they happen, next to what the model expected
+    before kick-off.</p>
+    <p class="live-meta" id="live-meta"></p>
+    <div id="live-scores" aria-live="polite">
+      <p class="muted">Loading today&#39;s scores&hellip;</p>
+    </div>
+    <noscript>
+      <p class="muted">Live scores need JavaScript. The fixtures, predictions
+      and tables below all work without it.</p>
+    </noscript>
+    <script type="application/json" id="live-config">{config}</script>
+    <script>{LIVE_JS}</script>
+  </section>
+
+"""
+
+
 def build(
     fixtures: pd.DataFrame,
     preds: pd.DataFrame | None = None,
@@ -906,6 +1119,7 @@ def build(
     perf_table, cur_table = _performance(preds) if preds is not None else ("", "")
     results = _results_section(logged, linked=linked) if logged is not None else ""
     clubs = _league_table(profiles) if profiles else ""
+    live = _live_section(fixtures, linked)
     projected = _projected_table(projection, linked)
     movement = _projection_movement(projection_history)
 
@@ -944,7 +1158,7 @@ def build(
 </header>
 
 <main>
-  <section>
+{live}  <section>
     <h2>Upcoming fixtures</h2>
     <div class="key">
       <span><i style="background:var(--home)"></i>Home win</span>

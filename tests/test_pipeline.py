@@ -7,6 +7,8 @@ tests below pin down the things that would hide that.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1601,8 +1603,6 @@ def test_league_table_ranks_clubs_and_marks_both_zones():
 
 
 def test_league_table_shows_signed_goal_difference_and_form_oldest_first():
-    import re
-
     from epl.site import _league_table
 
     out = _league_table([
@@ -1936,3 +1936,87 @@ def test_movement_section_charts_both_races_once_there_is_history():
     assert "<h3>Relegation fight</h3>" in out
     assert out.count("<svg") == 2
     assert "2 snapshots since 01 October 2026" in out
+
+
+# ---------------------------------------------------------------------------
+# live scores
+# ---------------------------------------------------------------------------
+def _live_fixtures():
+    return pd.DataFrame({
+        "date": pd.to_datetime(["2026-10-31", "2026-10-31"]),
+        "home_team": ["Chelsea", "Man City"],
+        "away_team": ["Man United", "Brighton"],
+        "p_home": [0.3878, 0.5212], "p_draw": [0.2944, 0.2688],
+        "p_away": [0.3177, 0.2100],
+    })
+
+
+def test_espn_aliases_map_onto_real_club_names():
+    """A typo here would silently stop live scores matching predictions."""
+    from epl.clubs import load_trophies
+    from epl.site import ESPN_ALIASES
+
+    clubs = {k for k in load_trophies() if not k.startswith("_")}
+    for espn, ours in ESPN_ALIASES.items():
+        assert ours in clubs, f"{espn} -> {ours} is not a club this site knows"
+        assert espn != ours, f"{espn} needs no alias"
+    # The names that differ between ESPN and this project are all covered.
+    for club in ("Man City", "Man United", "Nott'm Forest", "Tottenham",
+                 "Bournemouth", "Brighton", "Leeds", "Newcastle"):
+        assert club in ESPN_ALIASES.values(), club
+
+
+def test_live_section_embeds_predictions_and_slugs():
+    import json
+
+    from epl.site import _live_section
+
+    out = _live_section(_live_fixtures(), {"Chelsea", "Man United", "Man City"})
+    assert "<h2>Live scores</h2>" in out
+    assert 'id="live-scores"' in out and 'aria-live="polite"' in out
+    assert "<noscript>" in out
+
+    cfg = json.loads(re.search(r'id="live-config">(.*?)</script>', out, re.S).group(1))
+    assert cfg["predictions"]["Chelsea|Man United"] == [0.3878, 0.2944, 0.3177]
+    assert cfg["predictions"]["Man City|Brighton"] == [0.5212, 0.2688, 0.21]
+    assert cfg["slugs"]["Man United"] == "man-united"
+    assert cfg["aliases"]["Nottingham Forest"] == "Nott'm Forest"
+
+
+def test_live_section_renders_without_any_fixtures():
+    import json
+
+    from epl.site import _live_section
+
+    out = _live_section(pd.DataFrame(), set())
+    assert "<h2>Live scores</h2>" in out
+    cfg = json.loads(re.search(r'id="live-config">(.*?)</script>', out, re.S).group(1))
+    assert cfg["predictions"] == {}
+    assert cfg["slugs"] == {}
+    assert _live_section(None, None).count("<h2>Live scores</h2>") == 1
+
+
+def test_live_config_cannot_close_the_script_tag_early():
+    from epl.site import _live_section
+
+    nasty = pd.DataFrame({
+        "date": pd.to_datetime(["2026-10-31"]),
+        "home_team": ["</script><img src=x onerror=alert(1)>"],
+        "away_team": ["Chelsea"],
+        "p_home": [0.4], "p_draw": [0.3], "p_away": [0.3],
+    })
+    out = _live_section(nasty, set())
+    config = re.search(r'id="live-config">(.*?)</script>', out, re.S).group(1)
+    # The payload survives, but not as a tag that ends the script element.
+    assert "</script>" not in config
+    assert "<\\/script>" in config
+
+
+def test_live_section_is_first_on_the_page(tmp_path):
+    from epl.site import build
+
+    dest = build(_live_fixtures(), out_dir=tmp_path)
+    text = dest.read_text(encoding="utf-8")
+    headings = re.findall(r"<h2>([^<]+)</h2>", text)
+    assert headings[0] == "Live scores"
+    assert "Upcoming fixtures" in headings
