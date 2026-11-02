@@ -2592,3 +2592,38 @@ def test_the_two_espn_name_maps_agree_where_they_overlap():
 
     for espn, ours in browser.items():
         assert pipeline.get(espn) == ours, f"{espn}: browser {ours}, pipeline {pipeline.get(espn)}"
+
+
+def test_projection_is_withheld_when_the_fixture_feed_fails_mid_season():
+    """Simulating no matches makes all ten thousand runs agree, so the current
+    table would be published as final with the leader's title chance at 1.0.
+    A local build with both feeds down produced exactly that: Arsenal, nine
+    games in, p_title 1.0. Maximum confidence from no evidence, on a page
+    whose whole argument is that it states honest uncertainty."""
+    from epl.project import simulate_season
+
+    standings = _standings(
+        [(chr(65 + i), 9, 24 - i, 9 - i) for i in range(20)]
+    )
+    out = simulate_season(standings, pd.DataFrame(), n_sims=50)
+    assert out.empty, "a broken fixture feed must not be published as a result"
+
+
+def test_a_withheld_projection_leaves_the_log_as_it_was(tmp_path):
+    """The log is the record the title-race chart is drawn from, so a build
+    during an outage must not overwrite a good snapshot with a degenerate one."""
+    from epl.project import append_projection, load_projection_log, save_projection_log
+
+    path = tmp_path / "projection_log.csv"
+    good = pd.DataFrame({
+        "recorded_at": [pd.Timestamp("2026-10-29")],
+        "season_start": [2026], "team": ["Arsenal"], "position": [1],
+        "played": [8], "points": [21], "proj_points": [78.56],
+        "p_title": [0.4631], "p_europe": [0.9975], "p_relegation": [0.0],
+    })
+    save_projection_log(good, path)
+
+    kept = append_projection(pd.DataFrame(), 2026, path=path)
+    assert len(kept) == 1
+    assert float(kept.iloc[0]["p_title"]) == 0.4631
+    assert len(load_projection_log(path)) == 1

@@ -18,12 +18,15 @@ Two simplifications matter enough that the page states them:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from .config import ROOT
+
+log = logging.getLogger(__name__)
 
 # Monte Carlo draws. Ten thousand puts the standard error on a 50% finishing
 # probability at about half a point, which is well inside how precisely any
@@ -63,6 +66,23 @@ def simulate_season(
     teams = sorted(set(standings["team"]) | fx_teams)
     index = {t: i for i, t in enumerate(teams)}
     n = len(teams)
+
+    # An empty fixture list part way through a season means the fixture feed
+    # failed, not that everything has been decided. Simulating no matches
+    # gives every one of the ten thousand runs the same answer, so the
+    # current table would be published as the final one with the leader's
+    # title probability at 1.0: maximum confidence from no evidence at all,
+    # on a page whose whole argument is that it states honest uncertainty.
+    if fixtures.empty:
+        per_team = 2 * (n - 1) if n > 1 else 0
+        played = int(standings["played"].min()) if not standings.empty else 0
+        if played < per_team:
+            log.warning(
+                "no fixtures to simulate but the season is only %d match(es) "
+                "in; skipping the projection rather than calling it final",
+                played,
+            )
+            return pd.DataFrame(columns=COLUMNS)
 
     base_points = np.zeros(n)
     base_gd = np.zeros(n)
