@@ -201,6 +201,21 @@ def _season_window_label(seasons: list[int]) -> str:
     return first if first == last else f"{first} to {last}"
 
 
+def cmd_rosters(args) -> int:
+    """Top up the line-up archive without hammering a free site."""
+    from .lineups import backfill_rosters, missing_roster_matches
+
+    fetched = backfill_rosters(budget=args.budget, first_season=args.first_season,
+                               last_season=args.last_season)
+    got = sum(fetched.values())
+    left = sum(len(missing_roster_matches(y))
+               for y in range(max(args.first_season, 2014), args.last_season + 1))
+    for year, n in sorted(fetched.items(), reverse=True):
+        print(f"  {year}: fetched {n}")
+    print(f"fetched {got} match line-ups; {left} still missing")
+    return 0
+
+
 def cmd_site(args) -> int:
     out = Path(args.out) if args.out else SITE_DIR
     preds = pd.read_pickle(PREDS_PATH) if PREDS_PATH.exists() else None
@@ -235,7 +250,8 @@ def cmd_site(args) -> int:
         # Computed once for all clubs: each reads every season's roster file.
         career = career_stats()
         career_gk = career_keepers(feats)
-        career_label = _season_window_label(career_seasons())
+        seasons_held = career_seasons()
+        career_label = _season_window_label(seasons_held)
         table = league_table(feats, season_start)
         trophies = load_trophies()
         all_time = load_all_time_scorers()
@@ -244,7 +260,8 @@ def cmd_site(args) -> int:
             club_profile(t, feats, players, season_start, table=table,
                          trophies=trophies, summaries=summaries,
                          career=career, career_gk=career_gk,
-                         all_time=all_time, career_label=career_label)
+                         all_time=all_time, career_label=career_label,
+                         career_span=len(seasons_held))
             for t in teams
         ]
 
@@ -390,6 +407,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="also scrape per-match line-ups from Understat "
                          "(~4,600 requests, ~25 min; see the README on why this is optional)")
     fe.set_defaults(func=cmd_fetch)
+
+    ro = sub.add_parser("rosters", parents=[common],
+                        help="top up the per-match line-up archive, a bounded "
+                             "number of requests at a time")
+    ro.add_argument("--budget", type=int, default=400,
+                    help="maximum matches to fetch this run (default 400)")
+    ro.set_defaults(func=cmd_rosters)
 
     b = sub.add_parser("backtest", parents=[common], help="walk-forward evaluation")
     b.add_argument("--models", nargs="+", default=["xgb", "logreg", "elo", "market", "base"],

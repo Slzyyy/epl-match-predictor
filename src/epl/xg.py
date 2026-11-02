@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from .config import DATA_RAW
+from .config import DATA_RAW, LAST_SEASON
 from .data import TEAM_ALIASES, season_label
 
 log = logging.getLogger(__name__)
@@ -46,10 +46,16 @@ _HEADERS = {
 
 
 def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) -> dict:
-    """Fetch one season of Understat data, caching the raw JSON."""
+    """Fetch one season of Understat data, caching the raw JSON.
+
+    The current season is always re-fetched, cache or not, for the same reason
+    the football-data loader does it: results and xG are added to it as matches
+    are played, so a cached copy is stale within days. Completed seasons never
+    change and are served from disk.
+    """
     path = DATA_RAW / f"understat_EPL_{year}.json"
-    is_current = year >= FIRST_XG_SEASON and not path.exists()
-    if path.exists() and not refresh:
+    is_current = year >= LAST_SEASON
+    if path.exists() and not refresh and not is_current:
         return json.loads(path.read_text(encoding="utf-8"))
 
     log.info("downloading Understat EPL %s", year)
@@ -67,7 +73,6 @@ def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) 
             return json.loads(path.read_text(encoding="utf-8"))
         raise
     path.write_text(json.dumps(payload), encoding="utf-8")
-    del is_current
     time.sleep(pause)  # be gentle with a free data source
     return payload
 

@@ -2,8 +2,20 @@ name: Build and publish site
 
 on:
   schedule:
-    # Tuesdays 06:00 UTC, after the weekend's results and before midweek games.
-    - cron: "0 6 * * 2"
+    # The league plays two or three times a week, so a weekly rebuild left
+    # fixtures that had already been played sitting on the page as upcoming,
+    # and the table a full round behind. These three cover the real calendar:
+    #   06:00 daily  - the previous day's results, whenever they finished
+    #   23:00 daily  - the same evening, after a 20:00 UK kick-off (done by
+    #                  about 22:00, which is 21:00-22:00 UTC either side of
+    #                  the clock change)
+    #   18:00 Sat/Sun - after the lunchtime and 15:00 kick-offs, so the table
+    #                  is right while people are still watching
+    # Scheduled runs are best-effort on GitHub's side and can be late or
+    # skipped under load; the live-score block covers the gap either way.
+    - cron: "0 6 * * *"
+    - cron: "0 23 * * *"
+    - cron: "0 18 * * 6,0"
   push:
     branches: [main]
   workflow_dispatch:
@@ -50,15 +62,15 @@ jobs:
       - name: Fetch data
         run: python -m epl.cli fetch
 
-      - name: Fetch current-season line-ups
-        # Only the current season: the club pages show this season's players,
-        # and the full archive would be ~4,600 requests against a free site.
-        run: |
-          python - <<'PY'
-          from epl.config import LAST_SEASON
-          from epl.lineups import download_season_rosters
-          download_season_rosters(LAST_SEASON)
-          PY
+      # The whole archive is ~4,600 requests against a free site, so each run
+      # takes a bounded bite, newest season first. The download is resumable
+      # and data/raw is cached between runs, so it fills in over a few days
+      # and then only tops up the current season. Never fails the build: the
+      # club pages drop the multi-season table when the archive is too thin
+      # rather than repeating this season under a second heading.
+      - name: Top up the line-up archive
+        run: python -m epl.cli rosters --budget 400
+        continue-on-error: true
 
       - name: Backtest
         run: python -m epl.cli backtest

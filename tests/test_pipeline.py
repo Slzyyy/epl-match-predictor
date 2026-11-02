@@ -1541,7 +1541,7 @@ def test_club_page_renders_the_career_and_all_time_sections(tmp_path):
         "career_scorers": career, "career_assists": career,
         "career_keepers": pd.DataFrame({"player": ["Raya"], "starts": [90],
                                         "clean_sheets": [30], "seasons": [3]}),
-        "career_label": "2014-15 to 2026-27",
+        "career_label": "2014-15 to 2026-27", "career_span": 13,
         "all_time": {"_basis": "all competitions",
                      "players": [{"player": "Thierry Henry", "goals": 228,
                                   "years": "1999-2007, 2012"}]},
@@ -2020,3 +2020,172 @@ def test_live_section_is_first_on_the_page(tmp_path):
     headings = re.findall(r"<h2>([^<]+)</h2>", text)
     assert headings[0] == "Live scores"
     assert "Upcoming fixtures" in headings
+
+
+# ---------------------------------------------------------------------------
+# line-up archive backfill, and what the club page does without it
+# ---------------------------------------------------------------------------
+def test_missing_roster_matches_skips_what_is_already_downloaded(monkeypatch, tmp_path):
+    import json
+
+    import epl.lineups as L
+
+    path = tmp_path / "rosters.jsonl"
+    path.write_text(json.dumps({"understat_id": 2, "rows": []}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(L, "_roster_path", lambda y: path)
+    monkeypatch.setattr(L, "season_match_index",
+                        lambda y: pd.DataFrame({"understat_id": [1, 2, 3]}))
+    assert L.missing_roster_matches(2026) == [1, 3]
+
+
+def test_missing_roster_matches_is_quiet_when_the_feed_is_down(monkeypatch, tmp_path):
+    import epl.lineups as L
+
+    monkeypatch.setattr(L, "_roster_path", lambda y: tmp_path / "none.jsonl")
+
+    def down(_):
+        raise RuntimeError("feed unreachable")
+
+    monkeypatch.setattr(L, "season_match_index", down)
+    # A dead feed must not fail the build; there is simply nothing to fetch.
+    assert L.missing_roster_matches(2026) == []
+
+
+def test_backfill_spends_its_budget_newest_season_first(monkeypatch):
+    import epl.lineups as L
+
+    missing = {2026: 10, 2025: 10, 2024: 10}
+    monkeypatch.setattr(L, "missing_roster_matches",
+                        lambda y: list(range(missing.get(y, 0))))
+    calls = []
+    monkeypatch.setattr(L, "download_season_rosters",
+                        lambda y, **kw: calls.append((y, kw.get("limit"))))
+
+    out = L.backfill_rosters(budget=15, first_season=2024, last_season=2026)
+    # Newest first, and the budget is not exceeded.
+    assert calls == [(2026, 10), (2025, 5)]
+    assert out == {2026: 10, 2025: 5}
+    assert sum(out.values()) == 15
+
+
+def test_backfill_does_nothing_when_the_archive_is_complete(monkeypatch):
+    import epl.lineups as L
+
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: [])
+    calls = []
+    monkeypatch.setattr(L, "download_season_rosters",
+                        lambda y, **kw: calls.append(y))
+    assert L.backfill_rosters(budget=400, first_season=2024, last_season=2026) == {}
+    assert calls == []
+
+    # And a zero budget makes no requests at all.
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: [1, 2, 3])
+    assert L.backfill_rosters(budget=0, first_season=2024, last_season=2026) == {}
+    assert calls == []
+
+
+def _career_profile(span):
+    players = pd.DataFrame({"player": ["Haaland"], "apps": [8], "minutes": [711],
+                            "goals": [9.0], "xg": [7.0], "assists": [1.0], "xa": [0.9]})
+    return {
+        "team": "Man City", "slug": "man-city", "position": 1,
+        "season": {"played": 8, "won": 7, "drawn": 0, "lost": 1, "goals_for": 20,
+                   "goals_against": 9, "goal_difference": 11, "clean_sheets": 3,
+                   "failed_to_score": 0, "points": 21},
+        "form": pd.DataFrame({"date": [pd.Timestamp("2026-10-24")],
+                              "opponent": ["Everton"], "is_home": [True],
+                              "gf": [2], "ga": [0], "outcome": ["W"]}),
+        "scorers": players, "assists": players,
+        "keepers": pd.DataFrame({"player": ["Donnarumma"], "starts": [8],
+                                 "clean_sheets": [3]}),
+        "career_scorers": players.assign(seasons=[span]),
+        "career_assists": players.assign(seasons=[span]),
+        "career_keepers": pd.DataFrame({"player": ["Donnarumma"], "starts": [8],
+                                        "clean_sheets": [3], "seasons": [span]}),
+        "career_label": "2026-27" if span < 2 else "2014-15 to 2026-27",
+        "career_span": span,
+        "all_time": {"_basis": "all competitions",
+                     "players": [{"player": "Sergio Aguero", "goals": 260,
+                                  "years": "2011-2021"}]},
+        "trophies": {"League Champions": [2024]},
+        "wiki": {},
+    }
+
+
+def test_club_page_drops_the_career_table_when_it_would_repeat_this_season(tmp_path):
+    """One season of line-ups made this table a copy under a second heading."""
+    from epl.site import build_club_pages
+
+    (page,) = build_club_pages([_career_profile(1)], "2026/27", tmp_path)
+    text = page.read_text(encoding="utf-8")
+    assert "Premier League record" not in text
+    # The sections that do not depend on the archive are untouched.
+    for heading in ("This season", "All-time club record scorers", "Honours"):
+        assert heading in text, heading
+    assert "Sergio Aguero" in text
+
+
+def test_club_page_shows_the_career_table_once_the_archive_is_deep_enough(tmp_path):
+    from epl.site import build_club_pages
+
+    (page,) = build_club_pages([_career_profile(13)], "2026/27", tmp_path)
+    text = page.read_text(encoding="utf-8")
+    assert "Premier League record, 2014-15 to 2026-27" in text
+    assert "Seasons" in text
+
+
+def test_current_season_xg_is_never_served_from_a_stale_cache(monkeypatch, tmp_path):
+    """Results are appended to the current season all year, so a cached copy
+    of it goes stale within days. This is what froze the league table."""
+    import json
+
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    cached = {"dates": [{"id": 1, "isResult": True}]}
+    fresh = {"dates": [{"id": 1, "isResult": True}, {"id": 2, "isResult": True}]}
+    (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(json.dumps(cached))
+    (tmp_path / f"understat_EPL_{X.LAST_SEASON - 1}.json").write_text(json.dumps(cached))
+
+    calls = []
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return fresh
+
+    def get(url, **kw):
+        calls.append(url)
+        return Resp()
+
+    monkeypatch.setattr(X.requests, "get", get)
+    monkeypatch.setattr(X.time, "sleep", lambda s: None)
+
+    # The current season is re-fetched even though a cached copy exists.
+    assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 2
+    assert len(calls) == 1
+    # A finished season never changes, so it is served from disk.
+    assert len(X.download_season_xg(X.LAST_SEASON - 1)["dates"]) == 1
+    assert len(calls) == 1
+
+
+def test_a_dead_understat_still_falls_back_to_the_cache(monkeypatch, tmp_path):
+    import json
+
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
+        json.dumps({"dates": [{"id": 1, "isResult": True}]})
+    )
+
+    def down(url, **kw):
+        raise X.requests.RequestException("unreachable")
+
+    monkeypatch.setattr(X.requests, "get", down)
+    # Stale beats broken: the build keeps going on the last good copy.
+    assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1

@@ -85,11 +85,11 @@ def fetch_match_roster(match_id: int, session: requests.Session) -> list[dict]:
     return out
 
 
-def download_season_rosters(year: int, *, pause: float = 0.3, limit: int | None = None) -> Path:
-    """Fetch every match roster for a season, resumably.
+def missing_roster_matches(year: int) -> list[int]:
+    """Match ids for a season that have not been downloaded yet.
 
-    Already-downloaded matches are skipped, so an interrupted run can simply be
-    restarted. One request per match against a free site, hence the pause.
+    Separate from the download so a caller can size a run before making any
+    requests: the archive is one request per match against a free site.
     """
     path = _roster_path(year)
     done: set[int] = set()
@@ -98,15 +98,28 @@ def download_season_rosters(year: int, *, pause: float = 0.3, limit: int | None 
             for line in fh:
                 if line.strip():
                     done.add(json.loads(line)["understat_id"])
+    try:
+        index = season_match_index(year)
+    except Exception as exc:  # the feed is down; nothing to do this run
+        log.warning("season %s index unavailable (%s)", year, exc)
+        return []
+    return [m for m in index["understat_id"].tolist() if m not in done]
 
-    index = season_match_index(year)
-    todo = [m for m in index["understat_id"].tolist() if m not in done]
+
+def download_season_rosters(year: int, *, pause: float = 0.3, limit: int | None = None) -> Path:
+    """Fetch every match roster for a season, resumably.
+
+    Already-downloaded matches are skipped, so an interrupted run can simply be
+    restarted. One request per match against a free site, hence the pause.
+    """
+    path = _roster_path(year)
+    todo = missing_roster_matches(year)
     if limit:
         todo = todo[:limit]
     if not todo:
         return path
 
-    log.info("season %s: %d matches to fetch (%d cached)", year, len(todo), len(done))
+    log.info("season %s: %d matches to fetch", year, len(todo))
     session = requests.Session()
     with path.open("a", encoding="utf-8") as fh:
         for i, match_id in enumerate(todo, 1):
@@ -122,6 +135,39 @@ def download_season_rosters(year: int, *, pause: float = 0.3, limit: int | None 
                 log.info("  %s: %d/%d", year, i, len(todo))
             time.sleep(pause)
     return path
+
+
+def backfill_rosters(
+    *,
+    budget: int = 400,
+    first_season: int = FIRST_XG_SEASON,
+    last_season: int = 2026,
+    pause: float = 0.3,
+) -> dict[int, int]:
+    """Top the roster archive up by at most ``budget`` matches, newest first.
+
+    The full archive is ~4,600 requests against a free site, which is not a
+    reasonable thing to do on every build. Each run instead takes a bounded
+    bite; the download is resumable and the raw files are cached between runs,
+    so the archive fills in over several days and then stays put. Newest first
+    because the current season is what the club pages lead with.
+
+    Returns how many matches were fetched per season, so a caller can report
+    whether the archive is complete yet.
+    """
+    remaining = max(0, budget)
+    fetched: dict[int, int] = {}
+    for year in range(last_season, max(first_season, FIRST_XG_SEASON) - 1, -1):
+        if remaining <= 0:
+            break
+        missing = len(missing_roster_matches(year))
+        if not missing:
+            continue
+        take = min(missing, remaining)
+        download_season_rosters(year, pause=pause, limit=take)
+        fetched[year] = take
+        remaining -= take
+    return fetched
 
 
 def load_season_rosters(year: int) -> pd.DataFrame:

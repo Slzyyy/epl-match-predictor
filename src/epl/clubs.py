@@ -400,6 +400,7 @@ def club_profile(
     career_gk: pd.DataFrame | None = None,
     all_time: dict | None = None,
     career_label: str = "",
+    career_span: int = 0,
 ) -> dict:
     """Everything one club page needs.
 
@@ -430,6 +431,7 @@ def club_profile(
         "career_keepers": team_keepers(career_gk, team),
         "all_time": all_time.get(team, {}),
         "career_label": career_label,
+        "career_span": career_span,
         "trophies": trophies.get(team, {}),
         "wiki": summaries.get(team, {}),
     }

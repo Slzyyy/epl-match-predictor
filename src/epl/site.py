@@ -504,6 +504,28 @@ def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
     career_label = profile.get("career_label") or "recent seasons"
     all_time_html = _all_time(profile.get("all_time", {}), wiki.get("url", ""))
 
+    # One season of line-up data makes this table a copy of "This season"
+    # under a different heading, which is worse than not showing it. The
+    # archive is built up a few hundred matches at a time, so a fresh
+    # environment legitimately has only the current season for a while.
+    career_section = ""
+    if profile.get("career_span", 0) >= 2:
+        career_section = f"""  <section>
+    <h2>Premier League record, {career_label}</h2>
+    <h3>Top scorers</h3>
+{career_scorers_html}
+    <h3>Most assists</h3>
+{career_assists_html}
+    <h3>Clean sheets</h3>
+{career_keeper_html}
+    <p><small class="muted">For this club only: a player who moved is credited
+    here with what he scored in these colours, not his career total. Computed
+    from Understat appearance data, which begins in 2014-15 &mdash; so it is a
+    record over that window and not an all-time one.</small></p>
+  </section>
+
+"""
+
     repo_line = (f'<a href="{html.escape(repo_url)}">Source and methodology</a> &middot; '
                  if repo_url else "")
 
@@ -548,21 +570,7 @@ def _club_page(profile: dict, season_label: str, repo_url: str | None) -> str:
     than the raw count.</small></p>
   </section>
 
-  <section>
-    <h2>Premier League record, {career_label}</h2>
-    <h3>Top scorers</h3>
-{career_scorers_html}
-    <h3>Most assists</h3>
-{career_assists_html}
-    <h3>Clean sheets</h3>
-{career_keeper_html}
-    <p><small class="muted">For this club only: a player who moved is credited
-    here with what he scored in these colours, not his career total. Computed
-    from Understat appearance data, which begins in 2014-15 &mdash; so it is a
-    record over that window and not an all-time one.</small></p>
-  </section>
-
-  <section>
+{career_section}  <section>
     <h2>All-time club record scorers</h2>
 {all_time_html}
     <p><small class="muted">A club&#39;s all-time scorers reach back long before
