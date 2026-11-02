@@ -33,6 +33,7 @@ from .model import MODEL_KINDS, feature_importance, fit_model
 from .predict import predict_fixtures
 from .project import append_projection, projection_history, simulate_season
 from .lineups import attach_availability, download_season_rosters, load_availability
+from .espn import top_up_from_espn
 from .xg import attach_xg, load_xg, top_up_from_understat
 from .report import write_all
 from .clubs import (
@@ -67,6 +68,9 @@ def build_feature_table(
     if with_xg:
         xg = load_xg(refresh=refresh)
         matches = top_up_from_understat(matches, xg)
+        # Last of the three, for whatever the other two are still missing: it
+        # answered through an outage that took both of them down at once.
+        matches = top_up_from_espn(matches)
         matches = attach_xg(matches, xg)
         matches = attach_availability(matches, load_availability())
     feats = build_features(matches, include_odds=include_odds)

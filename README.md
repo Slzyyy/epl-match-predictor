@@ -484,6 +484,18 @@ that football-data has not yet published is appended with its score, so an
 outage cannot silently freeze the form features behind every prediction. Those
 rows carry no shots, corners or odds, which the trees handle natively.
 
+Two sources turned out not to be enough. On 2 November 2026 Understat was
+unreachable from both this machine and the GitHub runner, which leaves the
+table moving only as well as football-data happens to be feeling — and
+football-data was unreachable from this machine at the same time.
+[ESPN's scoreboard](https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard)
+answered throughout, and the page already trusts it for live scores, so
+`espn.py` asks it for finished matches too — last, for whatever the other two
+are still missing. It carries the score and nothing else, so it keeps the
+results current and replaces neither of the others. It costs one request per
+calendar day, starting where the data already held runs out, and a day whose
+matches have all finished is never asked about again.
+
 **Fixtures** come from Understat rather than football-data. The same payload
 that carries the xG also carries the full 380-match calendar, flagged played
 or not, so the remaining fixture list runs to the end of May and is never
@@ -643,6 +655,7 @@ src/epl/
   config.py     paths, season range, label encoding
   data.py       download + normalise football-data.co.uk CSVs
   xg.py         Understat expected-goals download and join
+  espn.py       ESPN scoreboard results, the third and last results source
   lineups.py    Understat per-match line-ups and squad-availability features
   features.py   feature engineering (leakage-safe)
   model.py      xgb / logreg / elo / market / base estimators

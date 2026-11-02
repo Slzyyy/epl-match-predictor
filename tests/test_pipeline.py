@@ -7,11 +7,13 @@ tests below pin down the things that would hide that.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 
 from epl import features as F
 from epl import metrics as M
@@ -2413,3 +2415,180 @@ def test_season_index_of_an_empty_feed_is_empty_but_typed(monkeypatch):
     # Columns must exist, or every caller that merges on them raises instead.
     for col in ("understat_id", "date", "home_team", "away_team", "season_start"):
         assert col in idx.columns, col
+
+
+# --- ESPN, the third results source -----------------------------------------
+
+def _espn_day(*pairs, completed=True, day="2026-10-25"):
+    """A scoreboard payload: pairs of ((home, hg), (away, ag))."""
+    events = []
+    for (home, hg), (away, ag) in pairs:
+        events.append({
+            "date": f"{day}T14:00Z",
+            "competitions": [{
+                "status": {"type": {"completed": completed}},
+                "competitors": [
+                    {"homeAway": "home", "team": {"displayName": home}, "score": str(hg)},
+                    {"homeAway": "away", "team": {"displayName": away}, "score": str(ag)},
+                ],
+            }],
+        })
+    return {"events": events}
+
+
+def _espn_matches():
+    """Two rows in the shape build_feature_table carries them."""
+    return pd.DataFrame({
+        "match_id": [0, 1],
+        "date": pd.to_datetime(["2026-08-21", "2026-08-22"]),
+        "season": ["2026-27", "2026-27"],
+        "season_start": [2026, 2026],
+        "home_team": ["Arsenal", "Chelsea"],
+        "away_team": ["Everton", "Fulham"],
+        "home_goals": [1.0, 2.0],
+        "away_goals": [0.0, 2.0],
+        "result": ["H", "D"],
+    })
+
+
+def _stub_espn(monkeypatch, tmp_path, by_day, today=dt.date(2026, 10, 28)):
+    import epl.espn as E
+
+    monkeypatch.setattr(E, "DATA_RAW", tmp_path)
+    monkeypatch.setattr(E, "_today", lambda: today)
+    monkeypatch.setattr(E.time, "sleep", lambda s: None)
+    asked = []
+
+    class Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    def get(url, params=None, **kw):
+        day = (params or {}).get("dates")
+        asked.append(day)
+        payload = by_day(day) if callable(by_day) else by_day.get(day, {"events": []})
+        return Resp(payload)
+
+    monkeypatch.setattr(E.requests, "get", get)
+    return E, asked
+
+
+def test_espn_supplies_results_the_other_two_sources_are_missing(monkeypatch, tmp_path):
+    """football-data lags and Understat went down entirely. With both of those
+    short, nothing moved the table on; this is the source that answered."""
+    E, asked = _stub_espn(monkeypatch, tmp_path, {
+        "20261025": _espn_day((("Liverpool", 2), ("Brighton & Hove Albion", 0))),
+    })
+    out = E.top_up_from_espn(_espn_matches(), year=2026,
+                             start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert len(out) == 3
+    added = out[out["home_team"] == "Liverpool"].iloc[0]
+    assert (added["away_team"], added["home_goals"], added["result"]) == ("Brighton", 2.0, "H")
+    # match_id is positional, so inserting a row has to reissue it.
+    assert list(out["match_id"]) == [0, 1, 2]
+
+
+def test_espn_ignores_matches_that_have_not_finished(monkeypatch, tmp_path):
+    E, _ = _stub_espn(monkeypatch, tmp_path, {
+        "20261025": _espn_day((("Liverpool", 1), ("Brighton & Hove Albion", 0)),
+                              completed=False),
+    })
+    frame = E.espn_results(2026, start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert frame.empty
+
+
+def test_espn_names_are_mapped_to_this_projects_spelling(monkeypatch, tmp_path):
+    """ESPN spells names out in full; the rest of the pipeline keys on
+    football-data's spelling, so an unmapped name would read as a new club."""
+    E, _ = _stub_espn(monkeypatch, tmp_path, {
+        "20261025": _espn_day(
+            (("Manchester United", 0), ("AFC Bournemouth", 3)),
+            (("Coventry City", 4), ("Newcastle United", 1)),
+        ),
+    })
+    frame = E.espn_results(2026, start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert set(frame["home_team"]) == {"Man United", "Coventry"}
+    assert set(frame["away_team"]) == {"Bournemouth", "Newcastle"}
+
+
+def test_espn_does_not_duplicate_a_match_already_held(monkeypatch, tmp_path):
+    E, _ = _stub_espn(monkeypatch, tmp_path, {
+        "20261025": _espn_day((("Arsenal", 1), ("Everton", 0))),
+    })
+    held = _espn_matches()
+    out = E.top_up_from_espn(held, year=2026,
+                             start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert len(out) == len(held)
+
+
+def test_espn_junk_is_never_cached(monkeypatch, tmp_path):
+    """A settled day is never asked about again, so a response that merely
+    parses as JSON would otherwise be kept as 'no matches that day' for good.
+    This is how the Understat cache was poisoned."""
+    E, _ = _stub_espn(monkeypatch, tmp_path, {"20261025": {"error": "nope"}})
+    frame = E.espn_results(2026, start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert frame.empty
+    stored = E._load_cache(2026)["days"]
+    assert "20261025" not in stored, "a bad response must not become the cache"
+
+
+def test_espn_settled_days_are_asked_about_once(monkeypatch, tmp_path):
+    E, asked = _stub_espn(monkeypatch, tmp_path, {
+        "20261025": _espn_day((("Liverpool", 2), ("Brighton & Hove Albion", 0))),
+    })
+    for _ in range(3):
+        E.espn_results(2026, start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 25))
+    assert asked == ["20261025"]
+
+
+def test_espn_refetches_days_that_may_still_be_in_play(monkeypatch, tmp_path):
+    """Asked about today, ESPN answers with fixtures that have not kicked off,
+    so the tail of the window can never be treated as final."""
+    today = dt.date(2026, 10, 28)
+    E, asked = _stub_espn(monkeypatch, tmp_path, {
+        "20261028": _espn_day((("Arsenal", 1), ("Chelsea", 1)), day="2026-10-28"),
+    }, today=today)
+    for _ in range(2):
+        E.espn_results(2026, start=today, end=today)
+    assert asked == ["20261028", "20261028"]
+
+
+def test_espn_sweep_stops_at_its_request_budget(monkeypatch, tmp_path):
+    """This runs inside a scheduled build. An unbounded sweep is how the
+    line-up backfill stalled CI for twenty-five minutes."""
+    E, asked = _stub_espn(monkeypatch, tmp_path, lambda day: {"events": []},
+                          today=dt.date(2026, 10, 28))
+    E.espn_results(2026, start=dt.date(2026, 9, 1), end=dt.date(2026, 10, 28), budget=4)
+    assert len(asked) == 4
+
+
+def test_espn_keeps_what_it_has_when_the_feed_dies_midway(monkeypatch, tmp_path):
+    """Partial results still move the table forward, so a failure part way
+    through a sweep must not throw away the days already fetched."""
+    def by_day(day):
+        if day == "20261025":
+            return _espn_day((("Liverpool", 2), ("Brighton & Hove Albion", 0)))
+        raise requests.RequestException("unreachable")
+
+    E, asked = _stub_espn(monkeypatch, tmp_path, by_day)
+    frame = E.espn_results(2026, start=dt.date(2026, 10, 25), end=dt.date(2026, 10, 27))
+    assert len(frame) == 1
+    assert frame.iloc[0]["home_team"] == "Liverpool"
+
+
+def test_the_two_espn_name_maps_agree_where_they_overlap():
+    """There are two by design: the browser gets a short map of current clubs
+    whose names differ, the pipeline needs every club that was ever in the
+    league. Disagreeing on a shared key would name one club two ways on the
+    same page -- the table from one map, the live score from the other."""
+    from epl.espn import ESPN_ALIASES as pipeline
+    from epl.site import ESPN_ALIASES as browser
+
+    for espn, ours in browser.items():
+        assert pipeline.get(espn) == ours, f"{espn}: browser {ours}, pipeline {pipeline.get(espn)}"
