@@ -49,18 +49,28 @@ def _roster_path(year: int) -> Path:
 def season_match_index(year: int) -> pd.DataFrame:
     """Match ids for one season, with teams and dates, from the league feed."""
     payload = download_season_xg(year)
-    rows = [
-        {
-            "understat_id": int(m["id"]),
-            "date": pd.to_datetime(m["datetime"]).normalize(),
-            "home_team": m["h"]["title"],
-            "away_team": m["a"]["title"],
-            "season_start": year,
-        }
-        for m in payload.get("dates", [])
-        if m.get("isResult")
-    ]
-    idx = pd.DataFrame(rows)
+    rows = []
+    skipped = 0
+    for m in payload.get("dates", []):
+        if not isinstance(m, dict) or not m.get("isResult"):
+            continue
+        try:
+            rows.append({
+                "understat_id": int(m["id"]),
+                "date": pd.to_datetime(m["datetime"]).normalize(),
+                "home_team": m["h"]["title"],
+                "away_team": m["a"]["title"],
+                "season_start": year,
+            })
+        except (KeyError, TypeError, ValueError):
+            # A feed that is partly malformed should cost us those matches,
+            # not the whole build.
+            skipped += 1
+    if skipped:
+        log.warning("season %s: skipped %d unreadable rows", year, skipped)
+
+    idx = pd.DataFrame(rows, columns=["understat_id", "date", "home_team",
+                                      "away_team", "season_start"])
     for col in ("home_team", "away_team"):
         idx[col] = idx[col].astype("string").str.strip().replace(UNDERSTAT_ALIASES)
     return idx

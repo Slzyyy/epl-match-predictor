@@ -2225,8 +2225,8 @@ def test_current_season_xg_is_never_served_from_a_stale_cache(monkeypatch, tmp_p
 
     monkeypatch.setattr(X, "DATA_RAW", tmp_path)
     X.clear_season_cache()
-    cached = {"dates": [{"id": 1, "isResult": True}]}
-    fresh = {"dates": [{"id": 1, "isResult": True}, {"id": 2, "isResult": True}]}
+    cached = _season_payload(1)
+    fresh = _season_payload(2)
     (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(json.dumps(cached))
     (tmp_path / f"understat_EPL_{X.LAST_SEASON - 1}.json").write_text(json.dumps(cached))
 
@@ -2264,7 +2264,7 @@ def test_a_dead_understat_still_falls_back_to_the_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(X, "DATA_RAW", tmp_path)
     X.clear_season_cache()
     (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
-        json.dumps({"dates": [{"id": 1, "isResult": True}]})
+        json.dumps(_season_payload(1))
     )
 
     def down(url, **kw):
@@ -2273,14 +2273,18 @@ def test_a_dead_understat_still_falls_back_to_the_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(X.requests, "get", down)
     # Stale beats broken: the build keeps going on the last good copy.
     assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1
+    X.clear_season_cache()
 
 
-def test_current_season_is_fetched_once_per_process_not_once_per_caller():
+def test_current_season_is_fetched_once_per_process_not_once_per_caller(
+    monkeypatch, tmp_path
+):
     """season_match_index runs once per club and once per archived season, so
     a build asks for the same season dozens of times. Re-fetching it every
     time turned one cached read into dozens of live requests."""
     import epl.xg as X
 
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
     X.clear_season_cache()
     calls = []
 
@@ -2289,21 +2293,18 @@ def test_current_season_is_fetched_once_per_process_not_once_per_caller():
             pass
 
         def json(self):
-            return {"dates": [{"id": 1, "isResult": True}]}
+            return _season_payload(1)
 
     def get(url, **kw):
         calls.append(url)
         return Resp()
 
-    original_get, original_sleep = X.requests.get, X.time.sleep
-    X.requests.get, X.time.sleep = get, lambda s: None
-    try:
-        for _ in range(25):
-            X.download_season_xg(X.LAST_SEASON)
-    finally:
-        X.requests.get, X.time.sleep = original_get, original_sleep
-        X.clear_season_cache()
+    monkeypatch.setattr(X.requests, "get", get)
+    monkeypatch.setattr(X.time, "sleep", lambda s: None)
+    for _ in range(25):
+        assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1
     assert len(calls) == 1, f"{len(calls)} requests for one season in one process"
+    X.clear_season_cache()
 
 
 def test_a_failed_fetch_is_not_retried_for_the_rest_of_the_build(monkeypatch, tmp_path):
@@ -2314,7 +2315,7 @@ def test_a_failed_fetch_is_not_retried_for_the_rest_of_the_build(monkeypatch, tm
     monkeypatch.setattr(X, "DATA_RAW", tmp_path)
     X.clear_season_cache()
     (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
-        json.dumps({"dates": [{"id": 1, "isResult": True}]})
+        json.dumps(_season_payload(1))
     )
     calls = []
 
@@ -2327,3 +2328,88 @@ def test_a_failed_fetch_is_not_retried_for_the_rest_of_the_build(monkeypatch, tm
         assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1
     assert len(calls) == 1
     X.clear_season_cache()
+
+
+# ---------------------------------------------------------------------------
+# a feed that answers with the wrong thing
+# ---------------------------------------------------------------------------
+def _season_payload(n=2):
+    return {"dates": [{"id": i, "datetime": f"2026-08-{15 + i} 15:00:00",
+                       "isResult": True, "h": {"title": "Arsenal"},
+                       "a": {"title": "Chelsea"}} for i in range(1, n + 1)]}
+
+
+def test_a_response_that_is_not_the_feed_is_never_written_to_the_cache(monkeypatch, tmp_path):
+    """It parsed as JSON, so it was cached, and a completed season is never
+    re-fetched. One bad response became permanent."""
+    import json
+
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    X.clear_season_cache()
+    path = tmp_path / f"understat_EPL_{X.LAST_SEASON}.json"
+    path.write_text(json.dumps(_season_payload(2)))
+
+    class Junk:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"error": "try again later"}
+
+    monkeypatch.setattr(X.requests, "get", lambda url, **kw: Junk())
+    monkeypatch.setattr(X.time, "sleep", lambda s: None)
+
+    out = X.download_season_xg(X.LAST_SEASON)
+    # Falls back to the good cache, and leaves it intact on disk.
+    assert len(out["dates"]) == 2
+    assert len(json.loads(path.read_text())["dates"]) == 2
+    X.clear_season_cache()
+
+
+def test_an_unusable_cache_yields_an_empty_season_rather_than_a_crash(monkeypatch, tmp_path):
+    import json
+
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    X.clear_season_cache()
+    (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
+        json.dumps({"error": "nope"})
+    )
+
+    def down(url, **kw):
+        raise X.requests.RequestException("unreachable")
+
+    monkeypatch.setattr(X.requests, "get", down)
+    assert X.download_season_xg(X.LAST_SEASON) == {"dates": []}
+    X.clear_season_cache()
+
+
+def test_season_index_skips_unreadable_rows_instead_of_failing(monkeypatch):
+    """A row with no kick-off time raised KeyError and took the build with it."""
+    import epl.lineups as L
+
+    payload = _season_payload(2)
+    payload["dates"].append({"id": 99, "isResult": True,
+                             "h": {"title": "Hull"}, "a": {"title": "Leeds"}})
+    payload["dates"].append({"id": 98, "datetime": "2026-09-01 15:00:00",
+                             "isResult": True})
+    monkeypatch.setattr(L, "download_season_xg", lambda y: payload)
+
+    idx = L.season_match_index(2026)
+    assert len(idx) == 2                      # the two good rows survive
+    assert list(idx["understat_id"]) == [1, 2]
+    assert idx["date"].notna().all()
+
+
+def test_season_index_of_an_empty_feed_is_empty_but_typed(monkeypatch):
+    import epl.lineups as L
+
+    monkeypatch.setattr(L, "download_season_xg", lambda y: {"dates": []})
+    idx = L.season_match_index(2026)
+    assert idx.empty
+    # Columns must exist, or every caller that merges on them raises instead.
+    for col in ("understat_id", "date", "home_team", "away_team", "season_start"):
+        assert col in idx.columns, col

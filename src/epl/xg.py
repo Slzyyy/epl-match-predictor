@@ -45,6 +45,27 @@ _HEADERS = {
 }
 
 
+def _usable_season(payload: object) -> bool:
+    """Whether a payload is the season feed and not something else.
+
+    Understat sometimes answers with a body that parses as JSON but is not
+    the league data - an error object, or an interstitial. Writing that to
+    the cache poisons every later build, because a completed season is never
+    re-fetched and the current season falls back to the cache whenever the
+    site is unreachable. Checking before writing is what stops one bad
+    response becoming permanent.
+    """
+    if not isinstance(payload, dict):
+        return False
+    dates = payload.get("dates")
+    if not isinstance(dates, list) or not dates:
+        return False
+    return any(
+        isinstance(m, dict) and m.get("id") is not None and m.get("datetime")
+        for m in dates
+    )
+
+
 # One parsed payload per season per process. season_match_index is called once
 # per club and once per season of the line-up archive, so a build asks for the
 # same season dozens of times; without this, re-fetching the current season
@@ -85,10 +106,21 @@ def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) 
         )
         resp.raise_for_status()
         payload = resp.json()
+        if not _usable_season(payload):
+            raise ValueError("response is not the season feed")
     except (requests.RequestException, ValueError) as exc:
         if path.exists():
             log.warning("Understat %s unavailable (%s); using the cached copy", year, exc)
-            cached = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                cached = json.loads(path.read_text(encoding="utf-8"))
+            except ValueError:
+                cached = {}
+            if not _usable_season(cached):
+                # A cache we cannot read is no better than none. Say so once
+                # and hand back an empty season rather than failing the build
+                # on every caller that happens to ask.
+                log.warning("Understat %s cache is unusable; treating as empty", year)
+                cached = {"dates": []}
             # Remember the fallback too, or every later call in this build
             # retries a source that has already failed once.
             _SEASON_CACHE[year] = cached
