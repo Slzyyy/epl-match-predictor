@@ -2224,6 +2224,7 @@ def test_current_season_xg_is_never_served_from_a_stale_cache(monkeypatch, tmp_p
     import epl.xg as X
 
     monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    X.clear_season_cache()
     cached = {"dates": [{"id": 1, "isResult": True}]}
     fresh = {"dates": [{"id": 1, "isResult": True}, {"id": 2, "isResult": True}]}
     (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(json.dumps(cached))
@@ -2261,6 +2262,7 @@ def test_a_dead_understat_still_falls_back_to_the_cache(monkeypatch, tmp_path):
     import epl.xg as X
 
     monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    X.clear_season_cache()
     (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
         json.dumps({"dates": [{"id": 1, "isResult": True}]})
     )
@@ -2271,3 +2273,57 @@ def test_a_dead_understat_still_falls_back_to_the_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(X.requests, "get", down)
     # Stale beats broken: the build keeps going on the last good copy.
     assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1
+
+
+def test_current_season_is_fetched_once_per_process_not_once_per_caller():
+    """season_match_index runs once per club and once per archived season, so
+    a build asks for the same season dozens of times. Re-fetching it every
+    time turned one cached read into dozens of live requests."""
+    import epl.xg as X
+
+    X.clear_season_cache()
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"dates": [{"id": 1, "isResult": True}]}
+
+    def get(url, **kw):
+        calls.append(url)
+        return Resp()
+
+    original_get, original_sleep = X.requests.get, X.time.sleep
+    X.requests.get, X.time.sleep = get, lambda s: None
+    try:
+        for _ in range(25):
+            X.download_season_xg(X.LAST_SEASON)
+    finally:
+        X.requests.get, X.time.sleep = original_get, original_sleep
+        X.clear_season_cache()
+    assert len(calls) == 1, f"{len(calls)} requests for one season in one process"
+
+
+def test_a_failed_fetch_is_not_retried_for_the_rest_of_the_build(monkeypatch, tmp_path):
+    import json
+
+    import epl.xg as X
+
+    monkeypatch.setattr(X, "DATA_RAW", tmp_path)
+    X.clear_season_cache()
+    (tmp_path / f"understat_EPL_{X.LAST_SEASON}.json").write_text(
+        json.dumps({"dates": [{"id": 1, "isResult": True}]})
+    )
+    calls = []
+
+    def down(url, **kw):
+        calls.append(url)
+        raise X.requests.RequestException("unreachable")
+
+    monkeypatch.setattr(X.requests, "get", down)
+    for _ in range(10):
+        assert len(X.download_season_xg(X.LAST_SEASON)["dates"]) == 1
+    assert len(calls) == 1
+    X.clear_season_cache()

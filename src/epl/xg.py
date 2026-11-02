@@ -45,18 +45,36 @@ _HEADERS = {
 }
 
 
+# One parsed payload per season per process. season_match_index is called once
+# per club and once per season of the line-up archive, so a build asks for the
+# same season dozens of times; without this, re-fetching the current season
+# turned one cached read into dozens of live requests against a free site.
+_SEASON_CACHE: dict[int, dict] = {}
+
+
+def clear_season_cache() -> None:
+    """Forget the in-process payloads. For tests and long-lived callers."""
+    _SEASON_CACHE.clear()
+
+
 def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) -> dict:
     """Fetch one season of Understat data, caching the raw JSON.
 
-    The current season is always re-fetched, cache or not, for the same reason
-    the football-data loader does it: results and xG are added to it as matches
-    are played, so a cached copy is stale within days. Completed seasons never
-    change and are served from disk.
+    The current season is re-fetched once per process, cache or not, for the
+    same reason the football-data loader does it: results and xG are added to
+    it as matches are played, so a copy on disk is stale within days.
+    Completed seasons never change and are read from disk.
     """
     path = DATA_RAW / f"understat_EPL_{year}.json"
     is_current = year >= LAST_SEASON
-    if path.exists() and not refresh and not is_current:
-        return json.loads(path.read_text(encoding="utf-8"))
+
+    if not refresh:
+        if year in _SEASON_CACHE:
+            return _SEASON_CACHE[year]
+        if path.exists() and not is_current:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            _SEASON_CACHE[year] = payload
+            return payload
 
     log.info("downloading Understat EPL %s", year)
     try:
@@ -70,9 +88,14 @@ def download_season_xg(year: int, *, refresh: bool = False, pause: float = 0.3) 
     except (requests.RequestException, ValueError) as exc:
         if path.exists():
             log.warning("Understat %s unavailable (%s); using the cached copy", year, exc)
-            return json.loads(path.read_text(encoding="utf-8"))
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            # Remember the fallback too, or every later call in this build
+            # retries a source that has already failed once.
+            _SEASON_CACHE[year] = cached
+            return cached
         raise
     path.write_text(json.dumps(payload), encoding="utf-8")
+    _SEASON_CACHE[year] = payload
     time.sleep(pause)  # be gentle with a free data source
     return payload
 
