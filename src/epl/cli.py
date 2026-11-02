@@ -205,7 +205,8 @@ def cmd_rosters(args) -> int:
     """Top up the line-up archive without hammering a free site."""
     from .lineups import backfill_rosters, missing_roster_matches
 
-    fetched = backfill_rosters(budget=args.budget, first_season=args.first_season,
+    fetched = backfill_rosters(budget=args.budget, max_seconds=args.max_seconds,
+                               first_season=args.first_season,
                                last_season=args.last_season)
     got = sum(fetched.values())
     left = sum(len(missing_roster_matches(y))
@@ -413,6 +414,9 @@ def main(argv: list[str] | None = None) -> int:
                              "number of requests at a time")
     ro.add_argument("--budget", type=int, default=400,
                     help="maximum matches to fetch this run (default 400)")
+    ro.add_argument("--max-seconds", type=float, default=240.0,
+                    help="wall-clock budget for the run (default 240s); a slow "
+                         "or unreachable source must not stall a build")
     ro.set_defaults(func=cmd_rosters)
 
     b = sub.add_parser("backtest", parents=[common], help="walk-forward evaluation")

@@ -2058,8 +2058,12 @@ def test_backfill_spends_its_budget_newest_season_first(monkeypatch):
     monkeypatch.setattr(L, "missing_roster_matches",
                         lambda y: list(range(missing.get(y, 0))))
     calls = []
-    monkeypatch.setattr(L, "download_season_rosters",
-                        lambda y, **kw: calls.append((y, kw.get("limit"))))
+
+    def fake(y, **kw):
+        calls.append((y, kw.get("limit")))
+        return kw.get("limit")
+
+    monkeypatch.setattr(L, "download_season_rosters", fake)
 
     out = L.backfill_rosters(budget=15, first_season=2024, last_season=2026)
     # Newest first, and the budget is not exceeded.
@@ -2074,7 +2078,7 @@ def test_backfill_does_nothing_when_the_archive_is_complete(monkeypatch):
     monkeypatch.setattr(L, "missing_roster_matches", lambda y: [])
     calls = []
     monkeypatch.setattr(L, "download_season_rosters",
-                        lambda y, **kw: calls.append(y))
+                        lambda y, **kw: calls.append(y) or 0)
     assert L.backfill_rosters(budget=400, first_season=2024, last_season=2026) == {}
     assert calls == []
 
@@ -2082,6 +2086,84 @@ def test_backfill_does_nothing_when_the_archive_is_complete(monkeypatch):
     monkeypatch.setattr(L, "missing_roster_matches", lambda y: [1, 2, 3])
     assert L.backfill_rosters(budget=0, first_season=2024, last_season=2026) == {}
     assert calls == []
+
+
+def test_backfill_stops_when_a_season_comes_up_short(monkeypatch):
+    """Short means out of time or the source stopped answering; either way,
+    moving on to the next season would just burn the rest of the budget."""
+    import epl.lineups as L
+
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: list(range(50)))
+    calls = []
+
+    def fake(y, **kw):
+        calls.append(y)
+        return 3  # asked for more, got three
+
+    monkeypatch.setattr(L, "download_season_rosters", fake)
+    out = L.backfill_rosters(budget=100, first_season=2024, last_season=2026)
+    assert calls == [2026]
+    assert out == {2026: 3}
+
+
+def test_backfill_respects_a_wall_clock_budget(monkeypatch):
+    import epl.lineups as L
+
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: list(range(50)))
+    calls = []
+    monkeypatch.setattr(L, "download_season_rosters",
+                        lambda y, **kw: calls.append(y) or 0)
+    # No time at all: the request budget is irrelevant.
+    assert L.backfill_rosters(budget=400, max_seconds=0,
+                              first_season=2024, last_season=2026) == {}
+    assert calls == []
+
+
+def _stub_downloader(monkeypatch, tmp_path, L, *, fail_every=None):
+    monkeypatch.setattr(L, "_roster_path", lambda y: tmp_path / f"r{y}.jsonl")
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: list(range(100)))
+    monkeypatch.setattr(L.time, "sleep", lambda s: None)
+    seen = []
+
+    def fetch(match_id, session, **kw):
+        seen.append(match_id)
+        if fail_every is not None:
+            raise RuntimeError("unreachable")
+        return [{"understat_id": match_id}]
+
+    monkeypatch.setattr(L, "fetch_match_roster", fetch)
+    return seen
+
+
+def test_downloader_gives_up_on_a_source_that_stops_answering(monkeypatch, tmp_path):
+    """An unreachable source turned a bounded request count into an unbounded
+    amount of time, which stalled a CI build for 25 minutes."""
+    import epl.lineups as L
+
+    seen = _stub_downloader(monkeypatch, tmp_path, L, fail_every=1)
+    got = L.download_season_rosters(2026, limit=100, max_failures=5)
+    assert got == 0
+    assert len(seen) == 5  # not 100
+
+
+def test_downloader_stops_at_its_deadline(monkeypatch, tmp_path):
+    import epl.lineups as L
+
+    seen = _stub_downloader(monkeypatch, tmp_path, L)
+    clock = iter([0.0] + [i * 1.0 for i in range(1, 200)])
+    monkeypatch.setattr(L.time, "monotonic", lambda: next(clock))
+    got = L.download_season_rosters(2026, limit=100, deadline=4.0)
+    assert 0 < got < 100
+    assert len(seen) == got
+
+
+def test_downloader_returns_how_many_it_actually_fetched(monkeypatch, tmp_path):
+    import epl.lineups as L
+
+    _stub_downloader(monkeypatch, tmp_path, L)
+    assert L.download_season_rosters(2026, limit=7) == 7
+    monkeypatch.setattr(L, "missing_roster_matches", lambda y: [])
+    assert L.download_season_rosters(2026, limit=7) == 0
 
 
 def _career_profile(span):

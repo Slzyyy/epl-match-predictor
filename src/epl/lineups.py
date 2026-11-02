@@ -66,12 +66,19 @@ def season_match_index(year: int) -> pd.DataFrame:
     return idx
 
 
-def fetch_match_roster(match_id: int, session: requests.Session) -> list[dict]:
-    """One match's roster rows, both sides, trimmed to the fields we use."""
+def fetch_match_roster(
+    match_id: int, session: requests.Session, *, timeout: float = 20.0
+) -> list[dict]:
+    """One match's roster rows, both sides, trimmed to the fields we use.
+
+    The timeout is short on purpose: this runs in a loop over hundreds of
+    matches, so a minute spent waiting on one unreachable request is a minute
+    multiplied by however many are left.
+    """
     resp = session.get(
         MATCH_URL.format(match_id=match_id),
         headers={**_HEADERS, "Referer": MATCH_PAGE.format(match_id=match_id)},
-        timeout=60,
+        timeout=timeout,
     )
     resp.raise_for_status()
     rosters = resp.json().get("rosters", {})
@@ -106,40 +113,66 @@ def missing_roster_matches(year: int) -> list[int]:
     return [m for m in index["understat_id"].tolist() if m not in done]
 
 
-def download_season_rosters(year: int, *, pause: float = 0.3, limit: int | None = None) -> Path:
-    """Fetch every match roster for a season, resumably.
+def download_season_rosters(
+    year: int,
+    *,
+    pause: float = 0.3,
+    limit: int | None = None,
+    deadline: float | None = None,
+    max_failures: int = 5,
+) -> int:
+    """Fetch match rosters for a season, resumably. Returns how many landed.
 
     Already-downloaded matches are skipped, so an interrupted run can simply be
     restarted. One request per match against a free site, hence the pause.
+
+    Bounded three ways, because this runs unattended in CI: ``limit`` caps the
+    requests, ``deadline`` (a ``time.monotonic`` value) caps the wall clock,
+    and ``max_failures`` consecutive errors abandons the run. Without the last
+    two, an unreachable source turns a bounded number of requests into an
+    unbounded amount of time - which is exactly what it did.
     """
     path = _roster_path(year)
     todo = missing_roster_matches(year)
     if limit:
         todo = todo[:limit]
     if not todo:
-        return path
+        return 0
 
     log.info("season %s: %d matches to fetch", year, len(todo))
     session = requests.Session()
+    fetched = 0
+    failures = 0
     with path.open("a", encoding="utf-8") as fh:
         for i, match_id in enumerate(todo, 1):
+            if deadline is not None and time.monotonic() >= deadline:
+                log.info("  %s: out of time after %d", year, fetched)
+                break
             try:
                 rows = fetch_match_roster(match_id, session)
             except Exception as exc:
+                failures += 1
                 log.warning("match %s failed: %s", match_id, exc)
-                time.sleep(2.0)
+                if failures >= max_failures:
+                    log.warning("  %s: giving up after %d consecutive failures",
+                                year, failures)
+                    break
+                time.sleep(1.0)
                 continue
+            failures = 0
             fh.write(json.dumps({"understat_id": match_id, "rows": rows}) + "\n")
             fh.flush()
+            fetched += 1
             if i % 50 == 0:
                 log.info("  %s: %d/%d", year, i, len(todo))
             time.sleep(pause)
-    return path
+    return fetched
 
 
 def backfill_rosters(
     *,
     budget: int = 400,
+    max_seconds: float = 240.0,
     first_season: int = FIRST_XG_SEASON,
     last_season: int = 2026,
     pause: float = 0.3,
@@ -156,17 +189,21 @@ def backfill_rosters(
     whether the archive is complete yet.
     """
     remaining = max(0, budget)
+    deadline = time.monotonic() + max_seconds
     fetched: dict[int, int] = {}
     for year in range(last_season, max(first_season, FIRST_XG_SEASON) - 1, -1):
-        if remaining <= 0:
+        if remaining <= 0 or time.monotonic() >= deadline:
             break
         missing = len(missing_roster_matches(year))
         if not missing:
             continue
         take = min(missing, remaining)
-        download_season_rosters(year, pause=pause, limit=take)
-        fetched[year] = take
-        remaining -= take
+        got = download_season_rosters(year, pause=pause, limit=take, deadline=deadline)
+        if got:
+            fetched[year] = got
+            remaining -= got
+        if got < take:
+            break  # out of time, or the source stopped answering
     return fetched
 
 
